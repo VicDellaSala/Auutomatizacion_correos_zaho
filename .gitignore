@@ -1,0 +1,13 @@
+node_modules/
+.next/
+coverage/
+*.tsbuildinfo
+.env*
+!.env.example
+*.zip
+*.eml
+private-samples/
+backups/
+test-results/
+playwright-report/
+*.log
