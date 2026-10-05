@@ -6,7 +6,7 @@ Aplicación privada para construir un histórico acumulativo de atención. Un ZI
 
 - Next.js 16, React 19, TypeScript, App Router y Tailwind CSS 4.
 - PostgreSQL externo con Drizzle ORM y `pg`. Se recomienda **Neon**, con conexión agrupada y TLS, por su integración con Vercel y porque permite transacciones PostgreSQL normales sin incorporar otro servicio de autenticación o almacenamiento. Supabase PostgreSQL también es compatible.
-- Autenticación equivalente a sesiones tradicionales: usuarios en PostgreSQL, contraseñas con `scrypt`, tokens aleatorios guardados como HMAC, cookie HttpOnly/Secure/SameSite, expiración de ocho horas, revocación al cerrar sesión y bloqueo temporal tras cinco intentos fallidos. No hay registro público ni contraseña predeterminada.
+- Acceso con **una clave compartida**, configurada solo en el servidor mediante `APP_PASSWORD`. No se pide correo ni se crean usuarios manualmente. Las sesiones usan tokens aleatorios guardados como HMAC en PostgreSQL, cookie HttpOnly/Secure/SameSite, expiración de ocho horas, revocación al cerrar sesión y bloqueo temporal tras cinco intentos fallidos. Cambiar `APP_PASSWORD` o `AUTH_SECRET` invalida las sesiones anteriores. No hay una clave predeterminada en el código.
 - ZIP con `@zip.js/zip.js`, `BlobReader` y Web Worker; MIME con PostalMime; HTML convertido a texto con htmlparser2/domutils. No se ejecuta HTML recibido ni se cargan imágenes externas.
 - Vitest con PostgreSQL WASM (PGlite) para pruebas transaccionales; Chrome/Playwright y PGlite Socket exclusivamente para pruebas de navegador. **La aplicación de producción siempre utiliza PostgreSQL externo.**
 
@@ -26,7 +26,7 @@ src/lib/reports/        HTML autónomo
 src/lib/backup/         Exportación y restauración validada
 drizzle/                Migraciones SQL versionadas
 tests/                  Correos sintéticos y pruebas de integración
-scripts/                Migraciones, usuarios y verificación local
+scripts/                Migraciones y verificación local
 ```
 
 ## Ejecutar localmente
@@ -42,6 +42,7 @@ Copia `.env.example` a `.env` y configura:
 | Variable | Uso |
 |---|---|
 | `DATABASE_URL` | Conexión PostgreSQL con TLS en producción. En Neon puede usarse la URL pooled. |
+| `APP_PASSWORD` | Clave compartida de acceso. Guárdala como variable privada del servidor; nunca como `NEXT_PUBLIC_…` ni en el repositorio. |
 | `AUTH_SECRET` | Secreto aleatorio de al menos 32 caracteres. Cambiarlo invalida las sesiones. |
 | `APP_URL` | Origen exacto de la aplicación, sin rutas. Local: `http://localhost:3000`. Producción: `https://tu-dominio.vercel.app`. Se comprueba en operaciones de escritura. |
 
@@ -50,11 +51,10 @@ Genera un secreto en tu terminal, guárdalo únicamente en las variables de ento
 ```bash
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 npm run db:migrate
-npm run user:create
 npm run dev
 ```
 
-`user:create` solicita nombre, correo y contraseña de al menos 12 caracteres. La entrada de contraseña en este comando es visible en la terminal; alternativamente puede recibirla en `ADMIN_PASSWORD` como variable temporal, sin escribirla en archivos ni argumentos del proceso. La contraseña no queda en el repositorio. Puedes ejecutar el comando de nuevo para añadir otros usuarios autorizados. Todos comparten el mismo histórico corporativo.
+Entra con el valor de `APP_PASSWORD`. La identidad técnica necesaria para guardar sesiones y auditoría se crea automáticamente. **No necesitas registrar un usuario ni ejecutar un comando de creación de usuarios.** Quienes conozcan la clave comparten el mismo acceso al histórico; las aprobaciones se atribuyen a “Acceso compartido”, no a una persona individual.
 
 Abre `http://localhost:3000`. La pantalla de login y la compilación funcionan sin credenciales; las operaciones de datos necesitan PostgreSQL inicializado.
 
@@ -64,18 +64,18 @@ La migración inicial configura `atencionagentes@credicard.com.ve` y los cuatro 
 
 1. Crea una base PostgreSQL en Neon. Conserva la URL de conexión de forma privada.
 2. Importa este repositorio en Vercel y selecciona el preset **Next.js**, raíz del repositorio y Node.js 22.
-3. Configura `DATABASE_URL`, `AUTH_SECRET` y `APP_URL` en Vercel. `APP_URL` debe coincidir con el dominio por el que se accederá; para previews usa su propio origen y una base separada.
-4. Desde un terminal autorizado, ejecuta `npm run db:migrate` contra esa base y `npm run user:create` para crear el acceso inicial.
+3. En **Settings → Environment Variables**, configura `DATABASE_URL`, `APP_PASSWORD`, `AUTH_SECRET` y `APP_URL`. Guarda `APP_PASSWORD` como variable privada de Production. `APP_URL` debe coincidir con el dominio por el que se accederá; para previews usa su propio origen y una base separada. Después de cambiar variables, realiza un **Redeploy** para aplicarlas.
+4. Desde un terminal autorizado, ejecuta `npm run db:migrate` contra esa base. El acceso compartido se inicializa automáticamente al usar el login: no hace falta crear un usuario.
 5. Construye con `npm run build`; Vercel detecta el comando automáticamente. No se ejecutan migraciones durante el build para evitar cambios concurrentes o conectar un preview accidentalmente a producción.
 6. Despliega y verifica login, importación sintética, revisión y aprobación. La API declara `maxDuration = 300`; comprueba que el plan elegido admita el tiempo necesario para las aprobaciones/restauraciones de tu volumen.
 
-No se han incluido credenciales de Neon ni Vercel. Subir el código a GitHub no crea por sí solo la base, los usuarios ni el despliegue.
+No se han incluido credenciales de Neon ni Vercel ni la clave de acceso. Subir el código a GitHub no configura por sí solo la base ni las variables privadas. El login distingue entre clave incorrecta, variables faltantes, tablas sin inicializar y problemas de conexión, sin exponer valores secretos.
 
 ## Base de datos
 
 | Tabla | Responsabilidad |
 |---|---|
-| `users`, `sessions` | Acceso privado, contraseñas derivadas y sesiones revocables. |
+| `users`, `sessions` | Identidad técnica automática, control de intentos y sesiones revocables. Se mantienen las tablas existentes por compatibilidad; la clave compartida se verifica exclusivamente contra la variable privada del servidor. |
 | `agents`, `settings` | Personal y buzón configurables. |
 | `imports` | Archivo, tamaño, huella, estado, fechas y usuario de aprobación. |
 | `staged_emails` | Mensajes pendientes con contenido, decisión manual y estado de revisión. Únicos por importación y clave. |

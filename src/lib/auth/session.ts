@@ -1,17 +1,18 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { createHmac, randomBytes } from "node:crypto";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
+import { and, eq, gt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { sessions, users } from "@/lib/db/schema";
-import { verifyPassword } from "./password";
+import {
+  AccessConfigurationError,
+  accessConfiguration,
+  authenticateSharedAccess,
+  sessionTokenHash,
+  sharedAccountEmail,
+  storageAccessError,
+} from "./shared-access";
 const cookieName = "atencion_session";
-function tokenHash(token: string) {
-  const secret = process.env.AUTH_SECRET;
-  if (!secret || secret.length < 32)
-    throw new Error("AUTH_SECRET debe tener al menos 32 caracteres");
-  return createHmac("sha256", secret).update(token).digest("hex");
-}
 export async function currentUser() {
   const token = (await cookies()).get(cookieName)?.value;
   if (!token) return null;
@@ -21,7 +22,8 @@ export async function currentUser() {
     .innerJoin(users, eq(users.id, sessions.userId))
     .where(
       and(
-        eq(sessions.tokenHash, tokenHash(token)),
+        eq(sessions.tokenHash, sessionTokenHash(token)),
+        eq(users.email, sharedAccountEmail),
         gt(sessions.expiresAt, new Date()),
       ),
     );
@@ -32,44 +34,35 @@ export async function requireUser() {
   if (!user) redirect("/login");
   return user;
 }
-export async function login(email: string, password: string) {
-  const user = await db().transaction(async (tx) => {
-    const [u] = await tx
-      .select()
-      .from(users)
-      .where(eq(users.email, email.toLowerCase()))
-      .for("update");
-    if (!u) {
-      verifyPassword(
-        password,
-        `00000000000000000000000000000000:${"0".repeat(128)}`,
-      );
-      return null;
-    }
-    if (u.lockedUntil && u.lockedUntil > new Date()) return null;
-    if (!verifyPassword(password, u.passwordHash)) {
-      await tx
-        .update(users)
-        .set({
-          failedAttempts: sql`${users.failedAttempts}+1`,
-          lockedUntil:
-            u.failedAttempts >= 4 ? new Date(Date.now() + 15 * 60000) : null,
-        })
-        .where(eq(users.id, u.id));
-      return null;
-    }
-    await tx
-      .update(users)
-      .set({ failedAttempts: 0, lockedUntil: null })
-      .where(eq(users.id, u.id));
-    return u;
-  });
+export async function login(password: string) {
+  const config = accessConfiguration();
+  if (
+    !process.env.DATABASE_URL ||
+    process.env.DATABASE_URL.includes("@host/database")
+  )
+    throw new AccessConfigurationError(
+      "Falta configurar DATABASE_URL en Vercel. El histórico y las sesiones necesitan PostgreSQL. No necesitas crear un usuario.",
+    );
+  let user;
+  try {
+    user = await authenticateSharedAccess(db(), password, config.password);
+  } catch (error) {
+    throw storageAccessError(error);
+  }
   if (!user) return false;
   const token = randomBytes(32).toString("hex"),
     expiresAt = new Date(Date.now() + 8 * 3600000);
-  await db()
-    .insert(sessions)
-    .values({ tokenHash: tokenHash(token), userId: user.id, expiresAt });
+  try {
+    await db()
+      .insert(sessions)
+      .values({
+        tokenHash: sessionTokenHash(token, config),
+        userId: user.id,
+        expiresAt,
+      });
+  } catch (error) {
+    throw storageAccessError(error);
+  }
   (await cookies()).set(cookieName, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -85,6 +78,6 @@ export async function logout() {
   if (token)
     await db()
       .delete(sessions)
-      .where(eq(sessions.tokenHash, tokenHash(token)));
+      .where(eq(sessions.tokenHash, sessionTokenHash(token)));
   jar.delete(cookieName);
 }

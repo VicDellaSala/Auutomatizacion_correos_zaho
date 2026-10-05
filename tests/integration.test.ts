@@ -25,6 +25,7 @@ import {
 import { reportHtml } from "../src/lib/reports/html";
 import { requestMail, responseMail, mailbox, staff, eml } from "./fixtures";
 import { parseEmail } from "../src/lib/email/mime-parser";
+import { authenticateSharedAccess } from "../src/lib/auth/shared-access";
 let pg: PGlite, db: Database;
 beforeAll(async () => {
   pg = new PGlite();
@@ -40,6 +41,42 @@ beforeEach(async () => {
 });
 afterAll(async () => {
   await pg.close();
+});
+it("inicia acceso compartido sin crear un usuario manual y reutiliza su identidad", async () => {
+  expect(await db.select().from(s.users)).toHaveLength(0);
+  const first = await authenticateSharedAccess(
+    db,
+    "synthetic-key",
+    "synthetic-key",
+  );
+  expect(first?.name).toBe("Acceso compartido");
+  const second = await authenticateSharedAccess(
+    db,
+    "synthetic-key",
+    "synthetic-key",
+  );
+  expect(second?.id).toBe(first?.id);
+  expect(await db.select().from(s.users)).toHaveLength(1);
+  expect(first?.passwordHash).not.toContain("synthetic-key");
+});
+it("bloquea cinco intentos fallidos y permite recuperación después de quince minutos", async () => {
+  const now = new Date("2026-10-04T15:00:00Z");
+  for (let i = 0; i < 5; i++)
+    expect(
+      await authenticateSharedAccess(db, "wrong", "synthetic-key", now),
+    ).toBeNull();
+  expect(
+    await authenticateSharedAccess(db, "synthetic-key", "synthetic-key", now),
+  ).toBeNull();
+  const later = new Date(now.getTime() + 16 * 60000);
+  expect(
+    await authenticateSharedAccess(db, "wrong", "synthetic-key", later),
+  ).toBeNull();
+  expect((await db.select().from(s.users))[0].failedAttempts).toBe(1);
+  expect(
+    await authenticateSharedAccess(db, "synthetic-key", "synthetic-key", later),
+  ).not.toBeNull();
+  expect((await db.select().from(s.users))[0].failedAttempts).toBe(0);
 });
 async function create() {
   const [i] = await db

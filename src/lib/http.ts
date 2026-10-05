@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DomainError } from "@/lib/imports/service";
+import { AccessConfigurationError } from "@/lib/auth/shared-access";
 export async function readJson(request: Request) {
   const limit = 3200000;
   const reader = request.body?.getReader();
@@ -34,6 +35,8 @@ export function requireSameOrigin(request: Request) {
     throw new DomainError("Origen de solicitud no autorizado");
 }
 export function errorResponse(error: unknown) {
+  if (error instanceof AccessConfigurationError)
+    return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof DomainError)
     return Response.json({ error: error.message }, { status: 400 });
   if (error instanceof z.ZodError)

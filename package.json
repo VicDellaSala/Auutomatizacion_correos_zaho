@@ -13,7 +13,6 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
-    "user:create": "tsx scripts/create-user.ts",
     "inspect:zip": "tsx scripts/inspect-zip.ts",
     "test:e2e": "tsx scripts/test-browser.ts",
     "test:large-zip": "tsx scripts/test-browser.ts --large",

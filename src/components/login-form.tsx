@@ -29,21 +29,12 @@ export function LoginForm() {
       }}
     >
       <label>
-        Correo de acceso
-        <input
-          type="email"
-          name="email"
-          autoComplete="username"
-          required
-          placeholder="tu.correo@empresa.com"
-        />
-      </label>
-      <label>
-        Contraseña
+        Clave de acceso
         <input
           type="password"
           name="password"
           autoComplete="current-password"
+          maxLength={1024}
           required
         />
       </label>

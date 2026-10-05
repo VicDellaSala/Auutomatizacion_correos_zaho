@@ -41,16 +41,15 @@ async function handle(request: Request, ctx: Context) {
     if (path.join("/") === "auth/login" && method === "POST") {
       const body = z
         .object({
-          email: z.email().max(320),
           password: z.string().min(1).max(1024),
         })
         .parse(await readJson(request));
-      return (await login(body.email, body.password))
+      return (await login(body.password))
         ? Response.json({ ok: true })
         : Response.json(
             {
               error:
-                "Credenciales inválidas o acceso bloqueado temporalmente. Intenta de nuevo en 15 minutos si hubo varios intentos.",
+                "Clave incorrecta o acceso bloqueado temporalmente. Intenta de nuevo en 15 minutos si hubo varios intentos.",
             },
             { status: 401 },
           );
@@ -241,7 +240,7 @@ async function handle(request: Request, ctx: Context) {
               size: body.size,
               fingerprint: body.fingerprint,
               total: body.total,
-              createdBy: user.email,
+              createdBy: user.name,
             })
             .returning();
           return created;
@@ -313,7 +312,7 @@ async function handle(request: Request, ctx: Context) {
                 db(),
                 id,
                 body.all === true ? "all" : ids(),
-                user.email,
+                user.name,
               ),
             });
           case "reject":

@@ -32,7 +32,7 @@ No se adjuntó un HTML de referencia; el reporte se implementó siguiendo las se
 
 | Verificación | Resultado |
 |---|---|
-| `npm test` | 33 pruebas aprobadas, 4 archivos |
+| `npm test` | 38 pruebas aprobadas, 4 archivos |
 | `npm run lint` | Sin errores ni advertencias |
 | `npm run typecheck` | Correcto |
 | `npm run build` | Build de producción correcto |
@@ -40,6 +40,8 @@ No se adjuntó un HTML de referencia; el reporte se implementó siguiendo las se
 | ZIP sintético mayor de 500 MB | 501 EML procesados sin publicar |
 
 Las pruebas unitarias e integración usan correos sintéticos y PostgreSQL WASM, sin mocks de las transacciones de negocio. La suite de navegador inicia una base independiente y sirve el build de producción para verificar el Worker real, staging, aprobación, acceso privado, reportes y diseño móvil. Sus capturas y archivos se guardan en `test-results/` y no se publican.
+
+El acceso se actualizó a una clave compartida privada (`APP_PASSWORD`), sin correo ni creación manual de usuarios. Se prueban la inicialización de la identidad técnica, el rechazo de claves incorrectas, el bloqueo y recuperación de intentos, y la invalidación de sesiones al rotar la clave o el secreto. La clave de producción no se incluye en código, pruebas ni documentación.
 
 Prueba grande completada: **525.614.714 bytes de ZIP**, 501 EML sintéticos procesados mediante el Worker real; 501 registros permanecieron en staging sin aprobación. La petición más grande fue de **63.325 bytes**. Pasaron login/logout, protección de páginas/API, cambio de estado solo después de aprobar, recarga del histórico, descarga HTML, respaldo, rechazo de origen incorrecto y diseño móvil de 390 px sin desbordamiento de página.
 

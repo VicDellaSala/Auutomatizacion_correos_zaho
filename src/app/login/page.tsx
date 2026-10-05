@@ -33,7 +33,7 @@ export default function Login() {
           <ShieldCheck size={29} color="#277d6a" style={{ marginBottom: 20 }} />
           <h1>Bienvenido</h1>
           <p className="muted">
-            Inicia sesión para acceder al control de atención.
+            Introduce la clave para acceder al control de atención.
           </p>
           <LoginForm />
           <p className="footer-note">

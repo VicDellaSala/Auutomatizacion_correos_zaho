@@ -6,16 +6,11 @@ import { Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { ZipWriter, TextReader, configure } from "@zip.js/zip.js";
-import { hashPassword } from "../src/lib/auth/password";
 import { eml, staff, mailbox } from "../tests/fixtures";
 configure({ useWebWorkers: false });
 const pg = await PGlite.create();
 await pg.exec(readFileSync("drizzle/0000_smart_pestilence.sql", "utf8"));
 const password = randomBytes(20).toString("hex");
-await pg.query(
-  'insert into users (email,name,"passwordHash") values ($1,$2,$3)',
-  ["browser@example.test", "Prueba", hashPassword(password)],
-);
 await pg.query("insert into settings (id,mailbox) values (1,$1)", [mailbox]);
 await pg.query("insert into agents (name,email) values ('Agente',$1)", [staff]);
 const server = new PGLiteSocketServer({
@@ -40,6 +35,7 @@ const app = spawn(
       ...process.env,
       DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:55439/postgres",
       AUTH_SECRET: randomBytes(32).toString("hex"),
+      APP_PASSWORD: password,
       APP_URL: "http://127.0.0.1:3107",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -71,12 +67,20 @@ try {
   expect(anonymous.status()).toBe(401);
   await page.goto("http://127.0.0.1:3107/dashboard");
   await expect(page).toHaveURL(/login/);
-  await page.getByLabel("Correo de acceso").fill("browser@example.test");
-  await page.getByLabel("Contraseña", { exact: true }).fill(password);
+  await expect(page.getByLabel("Correo de acceso")).toHaveCount(0);
+  expect((await pg.query("select * from users")).rows).toHaveLength(0);
+  await page
+    .getByLabel("Clave de acceso", { exact: true })
+    .fill("incorrect-test-only");
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Clave incorrecta" })).toBeVisible();
+  expect((await pg.query("select * from sessions")).rows).toHaveLength(0);
+  await page.getByLabel("Clave de acceso", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
   await expect(
     page.getByRole("heading", { name: "Resumen general" }),
   ).toBeVisible();
+  expect((await pg.query("select * from users")).rows).toHaveLength(1);
   async function zip(path: string, mails: string[], large = false) {
     const output = createWriteStream(path);
     const writer = new ZipWriter(
