@@ -4,8 +4,11 @@ import { agents, settings } from "@/lib/db/schema";
 import { PageHeading } from "@/components/page-heading";
 import { SettingsForm } from "@/components/settings-form";
 import { BackupPanel } from "@/components/backup-panel";
+import { CleanupPanel } from "@/components/cleanup-panel";
+import { ensureJulia } from "@/lib/imports/staff";
 export default async function Settings() {
   await requireUser();
+  await ensureJulia(db());
   const [config] = await db().select().from(settings);
   const staff = await db().select().from(agents).orderBy(agents.name);
   return (
@@ -20,6 +23,7 @@ export default async function Settings() {
         agents={staff}
       />
       <BackupPanel />
+      <CleanupPanel />
     </>
   );
 }

@@ -58,7 +58,7 @@ Entra con el valor de `APP_PASSWORD`. La identidad técnica necesaria para guard
 
 Abre `http://localhost:3000`. La pantalla de login y la compilación funcionan sin credenciales; las operaciones de datos necesitan PostgreSQL inicializado.
 
-La migración inicial configura `atencionagentes@credicard.com.ve` y los cuatro miembros solicitados: Geraldine Serrano, Rubén Castro, Lyliana Tarazona y Yessika Salcedo. El comando es idempotente y no sobrescribe la configuración existente.
+La migración inicial configura `atencionagentes@credicard.com.ve` y cinco miembros: Geraldine Serrano, Rubén Castro, Lyliana Tarazona, Yessika Salcedo y Julia Lanz G (`julia.lanz@credicard.com.ve`). El comando es idempotente y no sobrescribe la configuración existente.
 
 ## Desplegar en Vercel
 
@@ -89,8 +89,8 @@ Los participantes, destinatarios, CC, Reply-To y metadatos de adjuntos se conser
 
 ## Importación, pausa y recuperación
 
-1. Selecciona o arrastra **un ZIP por importación**. Puedes importar varios ZIP consecutivamente y conservar sus revisiones independientes.
-2. El Worker inspecciona el índice, detecta EML y crea la importación.
+1. Selecciona o arrastra **uno o varios ZIP por importación** (hasta 100 partes). Todas las partes seleccionadas comparten revisión y se relacionan entre sí al finalizar.
+2. El Worker inspecciona los índices, detecta todos los EML y crea una única importación. Lee cada ZIP y cada EML secuencialmente. El progreso muestra cada parte y el total.
 3. Procesa una entrada, extrae información y envía lotes pequeños a `/api/imports/{id}/staging-batch`.
 4. El servidor valida los datos, recalcula normalización y clave, reconoce al remitente y guarda solo staging. Cada lote es idempotente y transaccional.
 5. La pantalla muestra archivo, tamaño, detectados, procesados, porcentaje, etapa, entrada actual y errores. Los conteos por clasificación y cambios propuestos aparecen en revisión, cuando puede considerarse el conjunto de cabeceras.
@@ -98,7 +98,7 @@ Los participantes, destinatarios, CC, Reply-To y metadatos de adjuntos se conser
 
 Estados: `PROCESSING`, `PARTIAL`, `READY_FOR_REVIEW`, `PARTIALLY_APPROVED`, `APPROVED`, `DISCARDED`, `ERROR` y `REVERTED`. `APPROVED` representa revisión completada y puede contener registros rechazados: la interfaz dice “Revisión completada” y muestra los conteos por separado.
 
-Cancelar termina el Worker y marca la importación parcial. Si el navegador se cierra abruptamente, puede quedar en `PROCESSING`: desde pendientes se puede pausar o reanudar. Para reanudar selecciona el mismo ZIP; se verifica su huella (tamaño e índice con nombres, tamaños y CRC), se omiten entradas confirmadas y se vuelven a intentar las fallidas. Si una respuesta HTTP se pierde después de confirmar un lote, reintentarlo no duplica registros. Si se vuelve a cargar como importación nueva, también se mantiene la protección de doble conteo al aprobar.
+Cancelar termina el Worker y marca la importación parcial. Si el navegador se cierra abruptamente, puede quedar en `PROCESSING`: desde pendientes se puede pausar o reanudar. Para reanudar selecciona todos los mismos ZIP; se verifica su huella (tamaño e índice con nombres, tamaños y CRC), se omiten entradas confirmadas y se vuelven a intentar las fallidas. Si una respuesta HTTP se pierde después de confirmar un lote, reintentarlo no duplica registros. Si se vuelve a cargar como importación nueva, también se mantiene la protección de doble conteo al aprobar.
 
 ## Memoria: ZIP de 500 MB
 
@@ -109,7 +109,7 @@ File local → BlobReader (rangos) → una entrada EML → PostalMime
            → texto + cabeceras + metadata → lote → staging → siguiente entrada
 ```
 
-- Índice del ZIP en memoria: nombres/tamaños/CRC, no los cuerpos; límite de 100.000 EML por ZIP.
+- Índice del ZIP en memoria: nombres/tamaños/CRC, no los cuerpos; límite de 100.000 EML por importación.
 - Una sola entrada EML descomprimida a la vez, máximo **64 MiB**. También se comprueba el tamaño real durante la extracción y el CRC.
 - PostalMime procesa esa entrada completa y decodifica sus adjuntos temporalmente. Solo se guardan nombre, MIME y tamaño; los bytes se liberan con el mensaje. Por tanto, el pico depende del **EML más grande**, con sobrecarga de buffers, cadenas y MIME, no únicamente de su tamaño ni de un límite fijo de 64 MB de RAM.
 - Lotes de hasta **100 registros o aproximadamente 750 KB**. Un correo de texto excepcionalmente grande puede ir solo, con un límite serializado de **2,8 MB**; la API limita el cuerpo de petición a **3,2 MB**, por debajo del límite habitual de Vercel.
@@ -130,22 +130,22 @@ Message-ID es la identidad principal (hash SHA-256 del identificador). Si falta,
 
 ## Asociación de solicitudes y respuestas
 
-La identidad del miembro activo y si el buzón figura en Para/CC se capturan al procesar el mensaje. Los cambios posteriores de nombres, correos o activación se aplican a futuras entradas y no reescriben las atribuciones anteriores.
+La identidad del miembro activo y si el buzón figura en Para/CC se capturan al procesar el mensaje. Cambiar configuración reevalúa automáticamente todos los mensajes pendientes; conserva las atribuciones ya aprobadas. Julia se añade idempotentemente también en instalaciones existentes, sin requerir una migración.
 
 1. Se busca el padre por In-Reply-To.
 2. Si no está disponible, se recorre References desde la referencia más cercana.
 3. Se resuelve la raíz de la conversación y se valida cronología.
 4. Una respuesta válida exige remitente reconocido como personal, una solicitud raíz externa y una fecha posterior.
 5. Los correos externos posteriores son seguimientos; los mensajes iniciales del equipo son **correos iniciados**, no respuestas.
-6. Asunto normalizado, participantes y ventana de 30 días sirven para sugerir relaciones. Por seguridad, una coincidencia sin cabeceras fiables requiere decisión manual, especialmente con exportaciones parciales y asuntos genéricos.
+6. Sin cabeceras localizables, se busca asunto normalizado, remitente externo compatible en Para/CC (o mismo remitente en seguimientos), buzón y cronología. Una única raíz compatible con actividad anterior de menos de siete días se asocia automáticamente. Para asuntos genéricos la raíz debe tener como máximo 24 horas; sin asunto nunca se infiere. Varias raíces compatibles o contexto insuficiente requieren revisión. No se relaciona por asunto solamente. Las relaciones históricas aprobadas se conservan al incorporar nuevos mensajes.
 
-El caso dudoso conserva remitente, destinatarios, fecha y contenido. Se puede buscar el original y asignar manualmente solicitud, respuesta, correo iniciado o seguimiento. Una decisión manual también debe cumplir las reglas de remitente y fecha. Guardarla no publica el correo.
+El caso dudoso conserva remitente, destinatarios, fecha y contenido. Se puede buscar el original y asignar manualmente solicitud, respuesta, correo iniciado o seguimiento. Una decisión manual también debe cumplir las reglas de remitente y fecha. Una respuesta solo admite una solicitud original externa anterior: nunca ella misma ni otra respuesta. La relación se verifica al guardar. Guardarla no publica el correo.
 
 ## Aprobación y reversión
 
 La revisión permite seleccionar la página, deseleccionar, aprobar seleccionados, aprobar todos los pendientes con confirmación, rechazar seleccionados o descartar. Los grupos muestran solicitudes, respuestas, iniciados, seguimientos y casos por revisar. Las respuestas a solicitudes históricas muestran el estado actual y propuesto, autor, fecha y tiempo desde la solicitud.
 
-La transacción de aprobación obtiene un bloqueo asesor PostgreSQL compartido por las mutaciones, inserta los correos seleccionados, registra sus procedencias, reconstruye relaciones solo con correos oficiales y seleccionados, valida los casos, reconstruye conversaciones y actualiza staging/importación. Cualquier fallo provoca rollback. Si seleccionas una respuesta pero su original solo existe en staging y no lo seleccionas, la aprobación se rechaza íntegramente.
+La transacción de aprobación obtiene un bloqueo asesor PostgreSQL compartido por las mutaciones, inserta los correos seleccionados, registra sus procedencias, reconstruye relaciones solo con correos oficiales y seleccionados, valida los casos, reconstruye conversaciones y actualiza staging/importación. Cualquier fallo provoca rollback. Si seleccionas una respuesta cuyo original está pendiente en la misma importación, se incluyen automáticamente el original y la cadena necesaria. También puedes aprobar una conversación completa. Los errores identifican asunto, motivo y enlace para resolver. La paginación muestra solo pendientes y se ajusta al aprobar o rechazar; la selección se reinicia.
 
 La primera respuesta válida se elige por fecha, no por orden de carga. Si posteriormente apruebas una respuesta más temprana, el tiempo se corrige. Las siguientes permanecen en la conversación.
 
@@ -153,9 +153,21 @@ Revertir elimina únicamente la procedencia de esa importación. Un correo se el
 
 ## Dashboard, búsqueda y conversación
 
-Se muestran solicitudes recibidas, respondidas, no respondidas, tasa y promedio hasta la primera respuesta. Se distinguen respuestas por persona y correos iniciados. El detalle de cada solicitud es una línea temporal con todo el texto, cabeceras útiles y metadata de adjuntos.
+Se muestran solicitudes recibidas, respondidas, no respondidas, respuestas realizadas, tasa y promedio hasta la primera respuesta. Una solicitud con dos respuestas cuenta como una solicitud atendida y dos respuestas realizadas. Se distinguen respuestas por persona y correos iniciados. El detalle de cada solicitud es una línea temporal con todo el texto, cabeceras útiles y metadata de adjuntos.
 
 Los filtros incluyen hoy, ayer, últimos siete días, mes actual, mes anterior, rango y todo el histórico. **La cohorte se define por fecha de recepción de la solicitud**: las respuestas aprobadas posteriores al período siguen contando para esa solicitud. Las respuestas por persona cuentan mensajes de respuesta válidos y también indican solicitudes distintas; nunca incluyen correos iniciados. La búsqueda incluye el cuerpo y las respuestas del hilo.
+
+## Estado de atención y horario operativo
+
+La revisión cuenta solicitudes únicas que quedarían respondidas/no respondidas, separadas de los tipos de mensaje y de los cambios sobre solicitudes históricas. Los casos automáticos están listos para aprobar; el ajuste manual es opcional. Una clasificación manual de solicitud puede marcar **No respondida**, excluyendo las respuestas actualmente asociadas: estas vuelven a revisión, sin crear respuestas ficticias. Respuestas nuevas aprobadas posteriormente pueden cambiar el estado.
+
+Todos los tiempos suman únicamente la ventana **08:00–17:00 America/Caracas, todos los días**, incluidos sábados y domingos, sin feriados. Dashboard, tablas, revisión, conversación y HTML comparten esa regla. Las consultas recalculan el tiempo sobre las fechas originales, por lo que también funciona sobre datos existentes sin actualización destructiva ni migración. El promedio por persona incluye el tiempo de cada respuesta desde su solicitud; el promedio general utiliza solo la primera respuesta por solicitud. Las solicitudes no respondidas permiten abrir todo su contenido y origen desde su propia tabla.
+
+## Limpieza por fecha de importación
+
+Configuración permite elegir hoy, fecha, rango de fechas, un minuto específico o rango fecha/hora, en Caracas. Se filtra **imports.createdAt**, nunca la fecha interna del mensaje. El minuto final seleccionado se incluye. Primero se previsualizan importaciones, correos afectados, correos oficiales que se eliminarán, solicitudes/respuestas oficiales, registros de revisión y correos compartidos que se conservarán. Se exige escribir **ELIMINAR** antes de ejecutar. Si cambia la selección o el contenido desde el preview, la operación se rechaza y exige una nueva previsualización.
+
+La limpieza elimina las importaciones y sus procedencias/staging, borra únicamente correos sin otra procedencia y reconstruye conversaciones. No borra personal, buzón, configuración, usuarios ni sesiones. No se ejecuta ninguna limpieza automática al desplegar. Esta actualización utiliza el esquema existente; **no requiere nuevas migraciones PostgreSQL**.
 
 ## Reporte HTML autónomo
 

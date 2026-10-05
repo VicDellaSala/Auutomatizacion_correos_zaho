@@ -9,9 +9,10 @@ type Progress = {
   errors: number;
   stage: string;
   current?: string;
+  parts?: { name: string; total: number; processed: number }[];
 };
 export function ImportUploader({ resumeId }: { resumeId?: string }) {
-  const [file, setFile] = useState<File | null>(null),
+  const [files, setFiles] = useState<File[]>([]),
     [busy, setBusy] = useState(false),
     [id, setId] = useState(resumeId ?? ""),
     [error, setError] = useState(""),
@@ -34,18 +35,25 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
     window.addEventListener("beforeunload", prevent);
     return () => window.removeEventListener("beforeunload", prevent);
   }, [busy]);
-  function choose(f: File | undefined) {
-    if (!f) return;
-    if (!/\.zip$/i.test(f.name)) {
-      setError("Selecciona un archivo ZIP");
+  function choose(list: FileList | null) {
+    const selected = Array.from(list ?? []);
+    if (!selected.length) return;
+    if (
+      selected.length > 100 ||
+      selected.some((f) => !/\.zip$/i.test(f.name)) ||
+      selected.map((f) => f.name).join(" + ").length > 2000
+    ) {
+      setError(
+        "Selecciona hasta 100 archivos ZIP con nombres que sumen menos de 2.000 caracteres",
+      );
       return;
     }
-    setFile(f);
+    setFiles(selected);
     setError("");
     setDone(false);
   }
   function start() {
-    if (!file) return;
+    if (!files.length) return;
     setBusy(true);
     setError("");
     setDone(false);
@@ -54,7 +62,10 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
     );
     worker.current.onmessage = (event) => {
       const m = event.data;
-      if (m.type === "created") setId(m.id);
+      if (m.type === "created") {
+        setId(m.id);
+        setProgress((p) => ({ ...p, parts: m.parts, total: m.total }));
+      }
       if (m.type === "progress") setProgress((p) => ({ ...p, ...m }));
       if (m.type === "done") {
         setBusy(false);
@@ -75,7 +86,7 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
       );
       worker.current?.terminate();
     };
-    worker.current.postMessage({ file, resumeId: id || undefined });
+    worker.current.postMessage({ files, resumeId: id || undefined });
   }
   async function cancel() {
     worker.current?.terminate();
@@ -105,15 +116,15 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
       </div>
       {resumeId && (
         <div className="notice warning">
-          Selecciona el mismo ZIP para continuar. Se conservarán los correos ya
-          procesados y las decisiones de revisión.
+          Selecciona todos los mismos ZIP para continuar. Se conservarán los
+          correos ya procesados y las decisiones de revisión.
         </div>
       )}
       <section className="panel panel-body">
         <h2>Selecciona tu exportación de Zoho</h2>
         <p className="muted">
-          Puedes importar archivos de varios días; cada ZIP tiene su propia
-          revisión.
+          Selecciona una o varias partes de la exportación. Se analizarán juntas
+          en una única revisión al terminar todos los ZIP.
         </p>
         <div
           className={`dropzone ${drag ? "drag" : ""}`}
@@ -125,11 +136,11 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
           onDrop={(e) => {
             e.preventDefault();
             setDrag(false);
-            if (!busy) choose(e.dataTransfer.files[0]);
+            if (!busy) choose(e.dataTransfer.files);
           }}
         >
           <UploadCloud size={40} />
-          <h3>Arrastra un ZIP hasta aquí</h3>
+          <h3>Arrastra uno o varios ZIP hasta aquí</h3>
           <p className="muted">
             Exportaciones con archivos .eml · Procesamiento local
           </p>
@@ -138,24 +149,28 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
             disabled={busy}
             onClick={() => input.current?.click()}
           >
-            Seleccionar archivo
+            Seleccionar archivos
           </button>
           <input
             ref={input}
             type="file"
+            multiple
             accept=".zip,application/zip"
             hidden
-            onChange={(e) => choose(e.target.files?.[0])}
+            onChange={(e) => choose(e.target.files)}
           />
         </div>
-        {file && (
+        {files.length > 0 && (
           <div className="actions" style={{ justifyContent: "space-between" }}>
             <span className="actions">
               <FileArchive size={22} />
               <span>
-                <b>{file.name}</b>
+                <b>{files.map((f) => f.name).join(" + ")}</b>
                 <br />
-                <small className="muted">{bytes(file.size)}</small>
+                <small className="muted">
+                  {bytes(files.reduce((n, f) => n + f.size, 0))} ·{" "}
+                  {files.length} partes
+                </small>
               </span>
             </span>
             <button className="button" onClick={start} disabled={busy || done}>
@@ -183,6 +198,11 @@ export function ImportUploader({ resumeId }: { resumeId?: string }) {
               </span>
             </div>
             <progress max={progress.total || 1} value={progress.processed} />
+            {progress.parts?.map((part, i) => (
+              <p key={i}>
+                {part.name}: {part.processed} de {part.total} mensajes
+              </p>
+            ))}
             <div className="muted">
               {progress.processed} de {progress.total} correos procesados ·{" "}
               {progress.errors} errores

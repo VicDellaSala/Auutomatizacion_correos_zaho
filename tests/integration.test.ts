@@ -26,6 +26,13 @@ import { reportHtml } from "../src/lib/reports/html";
 import { requestMail, responseMail, mailbox, staff, eml } from "./fixtures";
 import { parseEmail } from "../src/lib/email/mime-parser";
 import { authenticateSharedAccess } from "../src/lib/auth/shared-access";
+import { cleanupPreview, cleanupCommit } from "../src/lib/imports/cleanup";
+import { refreshPendingStaff } from "../src/lib/imports/staff";
+import {
+  businessSeconds,
+  businessTimeSql,
+} from "../src/lib/metrics/business-time";
+import { sql } from "drizzle-orm";
 let pg: PGlite, db: Database;
 beforeAll(async () => {
   pg = new PGlite();
@@ -107,6 +114,279 @@ async function stage(
     .where(eq(s.imports.id, id));
 }
 describe("Transacciones reales en PostgreSQL (PGlite)", () => {
+  it("una relación aprobada no cambia por otra solicitud similar ni se reasigna tras borrar su original", async () => {
+    const a = await create(),
+      original = await requestMail();
+    await stage(a, [original]);
+    await approve(db, a, "all", "reviewer");
+    const b = await create(),
+      response = await responseMail();
+    response.inReplyTo = [];
+    response.references = [];
+    await stage(b, [response]);
+    await approve(db, b, "all", "reviewer");
+    const c = await create();
+    await stage(c, [await requestMail("similar@test")]);
+    await approve(db, c, "all", "reviewer");
+    expect(
+      (
+        await db.select().from(s.emails).where(eq(s.emails.key, response.key))
+      )[0].rootKey,
+    ).toBe(original.key);
+    await revert(db, a);
+    expect((await metrics(db, {})).answered).toBe(0);
+    const d = await create();
+    await stage(d, [await requestMail("another@test")]);
+    await approve(db, d, "all", "reviewer");
+    expect((await metrics(db, {})).answered).toBe(0);
+    expect(
+      (
+        await db.select().from(s.emails).where(eq(s.emails.key, response.key))
+      )[0],
+    ).toMatchObject({ kind: "REVIEW", rootKey: original.key });
+    const restored = await create();
+    await stage(restored, [original]);
+    await approve(db, restored, "all", "reviewer");
+    expect((await metrics(db, {})).answered).toBe(1);
+  });
+  it("errores detallados de aprobación identifican correo y motivo sin incorporar registros", async () => {
+    const id = await create(),
+      mail = await responseMail("orphan@test", "absent@test");
+    await stage(id, [mail]);
+    const [row] = await db.select().from(s.stagedEmails);
+    await expect(approve(db, id, "all", "reviewer")).rejects.toMatchObject({
+      issues: [
+        { id: row.id, subject: mail.subject, reason: expect.any(String) },
+      ],
+    });
+    expect(await db.select().from(s.emails)).toHaveLength(0);
+    expect((await db.select().from(s.stagedEmails))[0].state).toBe("PENDING");
+  });
+  it("dos ZIP en una importación, dos respuestas y una sola solicitud atendida", async () => {
+    const id = await create(),
+      a = await requestMail(),
+      b = await responseMail(),
+      c = await responseMail(
+        "extra@test",
+        "request@test",
+        "Sun, 04 Oct 2026 09:01:00 -0400",
+      );
+    await ingestBatch(
+      db,
+      id,
+      [{ sourceFile: "0:[ZIP 1 primera.zip]/0.eml", data: a }],
+      3,
+    );
+    await ingestBatch(
+      db,
+      id,
+      [
+        { sourceFile: "1:[ZIP 2 segunda.zip]/0.eml", data: b },
+        { sourceFile: "2:[ZIP 2 segunda.zip]/1.eml", data: c },
+      ],
+      3,
+    );
+    await db
+      .update(s.imports)
+      .set({ status: "READY_FOR_REVIEW" })
+      .where(eq(s.imports.id, id));
+    const proposed = await preview(db, id);
+    expect(proposed).toMatchObject({
+      answered: 1,
+      unanswered: 0,
+      counts: { REQUEST: 1, RESPONSE: 2, REVIEW: 0 },
+    });
+    expect((await metrics(db, {})).received).toBe(0);
+    await approve(db, id, "all", "reviewer");
+    expect(await metrics(db, {})).toMatchObject({
+      received: 1,
+      answered: 1,
+      responses: 2,
+      team: [{ name: "Agente", responses: 2, requests: 1 }],
+    });
+    expect((await db.select().from(s.conversations))[0].firstResponseKey).toBe(
+      b.key,
+    );
+  });
+  it("82 solicitudes: aprobar 30 deja 52 pendientes y permite seguir aprobando y rechazando", async () => {
+    const id = await create();
+    await stage(
+      id,
+      await Promise.all(
+        Array.from({ length: 82 }, (_, i) => requestMail(`page-${i}@test`)),
+      ),
+    );
+    const rows = await db.select().from(s.stagedEmails);
+    await approve(
+      db,
+      id,
+      rows.slice(0, 30).map((r) => r.id),
+      "reviewer",
+    );
+    expect((await preview(db, id)).counts.REQUEST).toBe(52);
+    await approve(
+      db,
+      id,
+      rows.slice(30, 60).map((r) => r.id),
+      "reviewer",
+    );
+    await reject(db, id, [rows[60].id]);
+    expect((await preview(db, id)).counts.REQUEST).toBe(21);
+    await approve(db, id, "all", "reviewer");
+    expect((await metrics(db, {})).received).toBe(81);
+  });
+  it("Julia existente en staging se reevalúa sin alterar el histórico", async () => {
+    const id = await create(),
+      a = await requestMail(),
+      b = await responseMail();
+    b.from = { name: "Julia", address: "julia.lanz@credicard.com.ve" };
+    await stage(id, [a, b]);
+    // Simulate staging created before Julia was configured.
+    await db.delete(s.agents).where(eq(s.agents.email, b.from.address));
+    await db
+      .update(s.stagedEmails)
+      .set({ staffName: null })
+      .where(eq(s.stagedEmails.key, b.key));
+    expect((await preview(db, id)).matches.get(b.key)?.kind).toBe("RESPONSE");
+    expect((await metrics(db, {})).received).toBe(0);
+    await approve(db, id, "all", "reviewer");
+    expect((await metrics(db, {})).team[0].name).toBe("Julia Lanz G");
+    const next = await create(),
+      c = await responseMail("newstaff@test");
+    c.from.address = "new@example.test";
+    await stage(next, [c]);
+    await db
+      .insert(s.agents)
+      .values({ name: "Nueva persona", email: c.from.address });
+    await refreshPendingStaff(db);
+    expect((await preview(db, next)).matches.get(c.key)?.kind).toBe("RESPONSE");
+  });
+  it("rechaza asociación propia u otra respuesta y verifica la relación manual guardada", async () => {
+    const id = await create(),
+      a = await requestMail(),
+      b = await responseMail(),
+      c = await responseMail(
+        "extra@test",
+        "request@test",
+        "Sun, 04 Oct 2026 09:01:00 -0400",
+      );
+    await stage(id, [a, b, c]);
+    const [row] = await db
+      .select()
+      .from(s.stagedEmails)
+      .where(eq(s.stagedEmails.key, c.key));
+    await expect(
+      decide(db, id, row.id, { kind: "RESPONSE", targetKey: c.key }),
+    ).rejects.toThrow();
+    await expect(
+      decide(db, id, row.id, { kind: "RESPONSE", targetKey: b.key }),
+    ).rejects.toThrow();
+    await decide(db, id, row.id, { kind: "RESPONSE", targetKey: a.key });
+    expect((await preview(db, id)).matches.get(c.key)?.reason).toBe(
+      "Asociación manual verificada",
+    );
+    expect(await approve(db, id, [row.id], "reviewer")).toBe(2);
+  });
+  it("marcar no respondida excluye asociaciones actuales y permite una respuesta futura", async () => {
+    const id = await create(),
+      a = await requestMail(),
+      b = await responseMail();
+    await stage(id, [a, b]);
+    const [row] = await db
+      .select()
+      .from(s.stagedEmails)
+      .where(eq(s.stagedEmails.key, a.key));
+    await decide(db, id, row.id, {
+      kind: "REQUEST",
+      requestStatus: "UNANSWERED",
+    });
+    expect((await preview(db, id)).unanswered).toBe(1);
+    await approve(db, id, [row.id], "reviewer");
+    expect(await metrics(db, {})).toMatchObject({
+      received: 1,
+      unanswered: 1,
+      answered: 0,
+      responses: 0,
+    });
+    const next = await create();
+    await stage(next, [await responseMail("later@test")]);
+    expect((await preview(db, next)).changes).toEqual([a.key]);
+    await approve(db, next, "all", "reviewer");
+    expect((await metrics(db, {})).answered).toBe(1);
+  });
+  it.each([
+    ["16:58", "08:01", 1, 180],
+    ["18:00", "08:05", 1, 300],
+    ["07:20", "08:10", 0, 600],
+    ["15:30", "16:15", 0, 2700],
+    ["16:30", "09:00", 1, 5400],
+  ])(
+    "horario diario SQL y JS: %s → %s (+%s días) = %s segundos",
+    async (a, b, days, seconds) => {
+      const start = `2026-10-03T${a}:00-04:00`,
+        end = `2026-10-0${3 + Number(days)}T${b}:00-04:00`;
+      expect(businessSeconds(start, end)).toBe(seconds);
+      const result = await db.execute(
+        sql`select ${businessTimeSql(sql`${start}::timestamptz`, sql`${end}::timestamptz`)} as seconds`,
+      );
+      expect(Number(result.rows[0].seconds)).toBe(seconds);
+    },
+  );
+  it("limpieza por hora de importación conserva compartidos, otras importaciones y configuración", async () => {
+    const first = await create(),
+      second = await create(),
+      third = await create(),
+      a = await requestMail();
+    await stage(first, [a]);
+    await approve(db, first, "all", "reviewer");
+    await stage(second, [a, await responseMail()]);
+    await approve(db, second, "all", "reviewer");
+    await stage(third, [await requestMail("other@test")]);
+    await approve(db, third, "all", "reviewer");
+    for (const [id, date] of [
+      [first, "2026-10-05T09:00:00-04:00"],
+      [second, "2026-10-05T10:00:00-04:00"],
+      [third, "2026-10-05T12:00:00-04:00"],
+    ])
+      await db
+        .update(s.imports)
+        .set({ createdAt: new Date(date) })
+        .where(eq(s.imports.id, id));
+    const from = "2026-10-05T09:30:00-04:00",
+      to = "2026-10-05T11:30:00-04:00";
+    const plan = await cleanupPreview(db, from, to);
+    expect(plan.totals).toMatchObject({
+      imports: 1,
+      emails: 1,
+      responses: 1,
+      shared: 1,
+    });
+    await expect(cleanupCommit(db, from, to, plan.token, "")).rejects.toThrow(
+      "confirmar",
+    );
+    expect((await metrics(db, {})).answered).toBe(1);
+    await cleanupCommit(db, from, to, plan.token, "ELIMINAR");
+    expect(await metrics(db, {})).toMatchObject({
+      received: 2,
+      answered: 0,
+      responses: 0,
+    });
+    expect(await db.select().from(s.imports)).toHaveLength(2);
+    expect(await db.select().from(s.settings)).toHaveLength(1);
+    expect(await db.select().from(s.agents)).toHaveLength(2);
+  });
+  it("limpieza rechaza una previsualización obsoleta", async () => {
+    const id = await create();
+    await stage(id, [await requestMail()]);
+    const from = "2000-01-01T00:00:00Z",
+      to = "2100-01-01T00:00:00Z",
+      plan = await cleanupPreview(db, from, to);
+    await approve(db, id, "all", "reviewer");
+    await expect(
+      cleanupCommit(db, from, to, plan.token, "ELIMINAR"),
+    ).rejects.toThrow("cambiaron");
+    expect((await metrics(db, {})).received).toBe(1);
+  });
   it("requisito crítico: staging del día siguiente no cambia dashboard hasta aprobación", async () => {
     const a = await create(),
       request = await requestMail();
@@ -128,7 +408,7 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
       received: 1,
       answered: 1,
       unanswered: 0,
-      average: 86400,
+      average: 32400,
     });
   });
   it("aprobación parcial y rechazo nunca publican el resto", async () => {
@@ -172,7 +452,7 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
     await revert(db, b);
     expect((await metrics(db, {})).received).toBe(0);
   });
-  it("aprobación de respuesta sin original seleccionado hace rollback completo", async () => {
+  it("aprobación de respuesta incorpora automáticamente el original pendiente", async () => {
     const id = await create();
     const response = await responseMail();
     await stage(id, [await requestMail(), response]);
@@ -180,12 +460,9 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
       .select()
       .from(s.stagedEmails)
       .where(eq(s.stagedEmails.key, response.key));
-    await expect(approve(db, id, [r.id], "reviewer")).rejects.toThrow(
-      "sin resolver",
-    );
-    expect(await db.select().from(s.emails)).toHaveLength(0);
-    expect(await db.select().from(s.emailImports)).toHaveLength(0);
-    await approve(db, id, "all", "reviewer");
+    expect(await approve(db, id, [r.id], "reviewer")).toBe(2);
+    expect(await db.select().from(s.emails)).toHaveLength(2);
+    expect(await db.select().from(s.emailImports)).toHaveLength(2);
     expect((await metrics(db, {})).answered).toBe(1);
   });
   it("múltiples respuestas mantienen la primera por fecha, no por orden de carga", async () => {
@@ -203,7 +480,8 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
     await stage(b, [await responseMail()]);
     await approve(db, b, "all", "reviewer");
     expect(await metrics(db, {})).toMatchObject({
-      average: 86400,
+      average: 32400,
+      responses: 2,
       team: [{ name: "Agente", responses: 2, requests: 1 }],
     });
   });

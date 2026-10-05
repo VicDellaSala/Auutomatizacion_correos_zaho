@@ -30,6 +30,11 @@ export const emailSchema = z.object({
   zohoStatus: z.string().max(2000).nullable(),
 });
 export const decisionSchema = z.object({
+  requestStatus: z.literal("UNANSWERED").optional(),
+  excludedResponseKeys: z
+    .array(z.string().regex(/^[a-f0-9]{64}$/))
+    .max(100000)
+    .optional(),
   kind: z.enum(["REQUEST", "RESPONSE", "STAFF_SENT", "FOLLOWUP"]),
   targetKey: z
     .string()

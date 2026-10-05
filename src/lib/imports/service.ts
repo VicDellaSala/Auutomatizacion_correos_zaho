@@ -2,6 +2,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 import * as s from "@/lib/db/schema";
 import { matchEmails } from "@/lib/matching/matcher";
+import { refreshPendingStaff, ensureJulia } from "./staff";
+import { businessTimeSql } from "@/lib/metrics/business-time";
 import { emailSchema } from "@/lib/validation/email";
 import { normalizeSubject, sha256 } from "@/lib/email/normalize";
 import { contentParts } from "@/lib/email/content-cleaner";
@@ -11,7 +13,14 @@ import type {
   MatchMail,
   ImportStatus,
 } from "@/types/email";
-export class DomainError extends Error {}
+export class DomainError extends Error {
+  constructor(
+    message: string,
+    public issues: { id: string; subject: string; reason: string }[] = [],
+  ) {
+    super(message);
+  }
+}
 export async function lock(db: Database) {
   await db.execute(sql`select pg_advisory_xact_lock(81742026)`);
 }
@@ -32,6 +41,7 @@ export async function ingestBatch(
     const imp = await getImport(tx, id);
     if (closed.includes(imp.status))
       throw new DomainError("Esta importación ya está cerrada");
+    await ensureJulia(tx);
     const [config] = await tx.select().from(s.settings);
     if (!config) throw new DomainError("Ejecuta las migraciones iniciales");
     const staff = await tx
@@ -104,7 +114,7 @@ export async function metadata(
   const official =
     await db.execute(sql`select key, data->>'messageId' as "messageId", data->'inReplyTo' as "inReplyTo", data->'references' as "references",
     data->>'date' as date, data->'from' as "from", data->'to' as "to", data->'cc' as cc, data->>'subject' as subject,
-    data->>'normalizedSubject' as "normalizedSubject", "staffName", addressed, decision from emails`);
+    data->>'normalizedSubject' as "normalizedSubject", "staffName", addressed, decision, kind as "approvedKind", "rootKey" as "approvedRootKey" from emails`);
   const result = official.rows as unknown as MatchMail[];
   if (importId) {
     const pending =
@@ -132,23 +142,32 @@ export async function rebuild(db: Database) {
     .from(s.emails);
   for (const row of existing) {
     const next = matches.get(row.key)!;
-    if (next.kind !== row.kind || next.rootKey !== row.rootKey)
+    // Retain the previously approved target when cleanup removes it. Later
+    // rebuilds must not silently assign this response to a different request.
+    const rootKey =
+      next.rootKey ?? (next.kind === "REVIEW" ? row.rootKey : null);
+    if (next.kind !== row.kind || rootKey !== row.rootKey)
       await db
         .update(s.emails)
-        .set({ kind: next.kind, rootKey: next.rootKey })
+        .set({ kind: next.kind, rootKey })
         .where(eq(s.emails.key, row.key));
   }
   await db.delete(s.conversations);
   await db.execute(sql`insert into conversations ("rootKey", "firstResponseKey", "firstResponseAt", "responseSeconds", "responseCount")
-    select e.key, f.key, f.date, extract(epoch from (f.date-e.date))::bigint,
+    select e.key, f.key, f.date, case when f.date is null then null else ${businessTimeSql(sql`e.date`, sql`f.date`)} end,
     (select count(*)::int from emails r where r."rootKey"=e.key and r.kind='RESPONSE')
     from emails e left join lateral (select r.key, r.date from emails r where r."rootKey"=e.key and r.kind='RESPONSE' order by r.date, r.key limit 1) f on true
     where e.kind in ('REQUEST','STAFF_SENT')`);
   return matches;
 }
 export async function preview(db: Database, id: string) {
+  await db.transaction(async (tx) => {
+    await lock(tx);
+    await refreshPendingStaff(tx);
+  });
   const matches = matchEmails(await metadata(db, id));
   const current = await db.select().from(s.conversations);
+  const currentByKey = new Map(current.map((c) => [c.rootKey, c]));
   const pending = await db
     .select({
       id: s.stagedEmails.id,
@@ -165,16 +184,38 @@ export async function preview(db: Database, id: string) {
     REVIEW: 0,
   };
   const changes = new Set<string>();
+  const existingRoots = new Set(current.map((c) => c.rootKey));
+  const newRoots = new Set<string>();
+  const answeredRoots = new Set(
+    [...matches.values()]
+      .filter((m) => m.kind === "RESPONSE")
+      .map((m) => m.rootKey),
+  );
+  let automatic = 0;
   for (const row of pending.filter((r) => r.state === "PENDING")) {
     const match = matches.get(row.key)!;
     counts[match.kind]++;
+    if (match.kind === "REQUEST" && !existingRoots.has(row.key))
+      newRoots.add(row.key);
+    if (match.kind !== "REVIEW" && !match.reason.includes("manual"))
+      automatic++;
     if (
       match.kind === "RESPONSE" &&
-      current.some((c) => c.rootKey === match.rootKey && !c.firstResponseKey)
+      match.rootKey &&
+      currentByKey.has(match.rootKey) &&
+      !currentByKey.get(match.rootKey)!.firstResponseKey
     )
       changes.add(match.rootKey!);
   }
-  return { matches, counts, changes: [...changes] };
+  return {
+    matches,
+    counts,
+    changes: [...changes],
+    automatic,
+    answered: [...newRoots].filter((key) => answeredRoots.has(key)).length,
+    unanswered: [...newRoots].filter((key) => !answeredRoots.has(key)).length,
+    answeredRoots: [...answeredRoots].filter((key): key is string => !!key),
+  };
 }
 async function refreshStatus(db: Database, id: string) {
   const rows = await db
@@ -205,7 +246,7 @@ async function refreshStatus(db: Database, id: string) {
 export async function approve(
   db: Database,
   id: string,
-  ids: string[] | "all",
+  ids: string[] | "all" | { conversation: string },
   user: string,
 ) {
   return db.transaction(async (tx) => {
@@ -215,15 +256,60 @@ export async function approve(
       throw new DomainError(
         "Finaliza o pausa el procesamiento antes de aprobar",
       );
+    await refreshPendingStaff(tx);
+    const allMetadata = await metadata(tx, id);
+    const proposed = matchEmails(allMetadata);
+    const mailByKey = new Map(allMetadata.map((m) => [m.key, m]));
+    const selectedIds = new Set(Array.isArray(ids) ? ids : []);
+    const pending = await tx
+      .select({ id: s.stagedEmails.id, key: s.stagedEmails.key })
+      .from(s.stagedEmails)
+      .where(
+        and(
+          eq(s.stagedEmails.importId, id),
+          eq(s.stagedEmails.state, "PENDING"),
+        ),
+      );
+    const selected = pending.filter(
+      (r) =>
+        ids === "all" ||
+        (Array.isArray(ids)
+          ? selectedIds.has(r.id)
+          : proposed.get(r.key)?.rootKey === ids.conversation),
+    );
+    const selectedKeys = new Set(selected.map((r) => r.key));
+    const pendingByKey = new Map(pending.map((r) => [r.key, r]));
+    // Include the original and any header chain needed to reproduce this match after approval.
+    for (let i = 0; i < selected.length; i++) {
+      const match = proposed.get(selected[i].key);
+      for (const key of [match?.rootKey, ...(match?.dependencies ?? [])]) {
+        const dependency = key ? pendingByKey.get(key) : undefined;
+        if (dependency && !selectedKeys.has(dependency.key)) {
+          selected.push(dependency);
+          selectedKeys.add(dependency.key);
+        }
+      }
+    }
+    const issues = selected
+      .filter((r) => proposed.get(r.key)?.kind === "REVIEW")
+      .map((r) => ({
+        id: r.id,
+        subject: mailByKey.get(r.key)?.subject ?? r.key,
+        reason: proposed.get(r.key)!.reason,
+      }));
+    if (issues.length)
+      throw new DomainError(
+        "No se pudo aprobar. Resuelve los siguientes correos; no se incorporó ningún registro.",
+        issues,
+      );
     const where = and(
       eq(s.stagedEmails.importId, id),
       eq(s.stagedEmails.state, "PENDING"),
-      ids === "all" ? undefined : inArray(s.stagedEmails.id, ids),
+      inArray(
+        s.stagedEmails.id,
+        selected.map((r) => r.id),
+      ),
     );
-    const selected = await tx
-      .select({ id: s.stagedEmails.id, key: s.stagedEmails.key })
-      .from(s.stagedEmails)
-      .where(where);
     if (!selected.length)
       throw new DomainError("No hay correos pendientes seleccionados");
     for (let offset = 0; offset < selected.length; offset += 100) {
@@ -268,7 +354,14 @@ export async function approve(
     const matches = await rebuild(tx);
     if (selected.some((r) => matches.get(r.key)?.kind === "REVIEW"))
       throw new DomainError(
-        "Hay casos sin resolver o respuestas cuyo original no está seleccionado ni aprobado. Resuélvelos o ajusta la selección; no se incorporó ningún correo.",
+        "Una relación cambió durante la incorporación; revisa los correos indicados.",
+        selected
+          .filter((r) => matches.get(r.key)?.kind === "REVIEW")
+          .map((r) => ({
+            id: r.id,
+            subject: mailByKey.get(r.key)?.subject ?? r.key,
+            reason: matches.get(r.key)!.reason,
+          })),
       );
     await tx.update(s.stagedEmails).set({ state: "APPROVED" }).where(where);
     await tx
@@ -306,6 +399,55 @@ export async function decide(
 ) {
   await db.transaction(async (tx) => {
     await lock(tx);
+    const imp = await getImport(tx, id);
+    if (closed.includes(imp.status) || imp.status === "PROCESSING")
+      throw new DomainError("Finaliza el procesamiento antes de resolver");
+    await refreshPendingStaff(tx);
+    const [row] = await tx
+      .select({ key: s.stagedEmails.key })
+      .from(s.stagedEmails)
+      .where(
+        and(
+          eq(s.stagedEmails.id, rowId),
+          eq(s.stagedEmails.importId, id),
+          eq(s.stagedEmails.state, "PENDING"),
+        ),
+      );
+    if (!row) throw new DomainError("El registro ya no está pendiente");
+    const mails = await metadata(tx, id);
+    const mail = mails.find((m) => m.key === row.key)!;
+    if (
+      (
+        await tx
+          .select({ key: s.emails.key })
+          .from(s.emails)
+          .where(eq(s.emails.key, row.key))
+      ).length
+    )
+      throw new DomainError(
+        "Este correo ya existe en el histórico; aprueba su procedencia sin cambiar la decisión histórica",
+      );
+    const before = matchEmails(mails);
+    // A manual unanswered decision excludes only currently associated responses, never future messages.
+    decision = {
+      ...decision,
+      excludedResponseKeys:
+        decision.kind === "REQUEST" && decision.requestStatus === "UNANSWERED"
+          ? [
+              ...new Set([
+                ...(mail.decision?.excludedResponseKeys ?? []),
+                ...[...before]
+                  .filter(
+                    ([, m]) => m.kind === "RESPONSE" && m.rootKey === row.key,
+                  )
+                  .map(([key]) => key),
+              ]),
+            ]
+          : undefined,
+    };
+    mail.decision = decision;
+    const verified = matchEmails(mails).get(row.key)!;
+    if (verified.kind === "REVIEW") throw new DomainError(verified.reason);
     const result = await tx
       .update(s.stagedEmails)
       .set({ decision })

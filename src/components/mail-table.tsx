@@ -38,6 +38,9 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
                   <div className="preview">{r.data.from.address}</div>
                 )}
                 <div className="preview">{r.data.preview}</div>
+                <Link className="section-link" href={`/conversations/${r.key}`}>
+                  Abrir correo completo →
+                </Link>
               </td>
               {sent && (
                 <td>

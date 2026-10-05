@@ -3,6 +3,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import * as s from "@/lib/db/schema";
 import { currentUser, login, logout } from "@/lib/auth/session";
+import { refreshPendingStaff } from "@/lib/imports/staff";
+import { matchEmails } from "@/lib/matching/matcher";
+import { cleanupPreview, cleanupCommit } from "@/lib/imports/cleanup";
 import {
   approve,
   decide,
@@ -11,6 +14,7 @@ import {
   getImport,
   ingestBatch,
   lock,
+  metadata,
   reject,
   revert,
 } from "@/lib/imports/service";
@@ -66,12 +70,70 @@ async function handle(request: Request, ctx: Context) {
     }
     if (path[0] === "lookup" && method === "GET") {
       const query = new URL(request.url).searchParams;
-      const term = `%${(query.get("q") ?? "").slice(0, 200).replace(/[\\%_]/g, "\\$&")}%`;
+      const term = (query.get("q") ?? "").slice(0, 200).toLowerCase();
       const importId = z.uuid().parse(query.get("importId"));
-      const rows = await db().execute(
-        sql`select key,data->>'subject' as subject,data->>'date' as date,data->'from'->>'address' as "from" from emails where kind in ('REQUEST','STAFF_SENT') and "searchText" ilike ${term} union select key,data->>'subject' as subject,data->>'date' as date,data->'from'->>'address' as "from" from staged_emails where "importId"=${importId} and state='PENDING' and (data->>'subject' ilike ${term} or data->'from'->>'address' ilike ${term}) limit 40`,
-      );
-      return Response.json({ rows: rows.rows });
+      const mails = await metadata(db(), importId);
+      const current = mails.find((m) => m.key === query.get("exclude"));
+      if (!current)
+        throw new DomainError("Selecciona el correo que estás resolviendo");
+      const matches = matchEmails(mails);
+      const score = (m: typeof current) =>
+        Number(m.normalizedSubject === current.normalizedSubject) * 4 +
+        Number(
+          [...current.to, ...current.cc].some(
+            (a) => a.address === m.from.address,
+          ) || current.from.address === m.from.address,
+        ) *
+          2;
+      const rows = mails
+        .filter(
+          (m) =>
+            m.key !== current.key &&
+            !m.staffName &&
+            matches.get(m.key)?.kind === "REQUEST" &&
+            Date.parse(m.date) < Date.parse(current.date) &&
+            `${m.subject} ${m.from.address}`.toLowerCase().includes(term),
+        )
+        .sort(
+          (a, b) =>
+            score(b) - score(a) || Date.parse(b.date) - Date.parse(a.date),
+        )
+        .slice(0, 40)
+        .map((m) => ({
+          key: m.key,
+          subject: m.subject,
+          date: m.date,
+          from: m.from.address,
+        }));
+      return Response.json({ rows });
+    }
+    if (path[0] === "cleanup" && method === "POST") {
+      const body = z
+        .object({
+          from: z.iso.datetime({ offset: true }),
+          to: z.iso.datetime({ offset: true }),
+          token: z.string().optional(),
+          confirm: z.string().optional(),
+        })
+        .parse(await readJson(request));
+      if (path[1] === "preview")
+        return Response.json(
+          await db().transaction(async (tx) => {
+            await lock(tx);
+            return cleanupPreview(tx, body.from, body.to);
+          }),
+        );
+      if (path[1] === "commit")
+        return Response.json(
+          await cleanupCommit(
+            db(),
+            body.from,
+            body.to,
+            body.token ?? "",
+            body.confirm ?? "",
+          ),
+        );
+      throw new DomainError("Acción desconocida");
     }
     if (path[0] === "reports" && method === "GET") {
       const params = new URL(request.url).searchParams;
@@ -203,6 +265,7 @@ async function handle(request: Request, ctx: Context) {
               .insert(s.agents)
               .values({ ...a, email: a.email.toLowerCase() });
         }
+        await refreshPendingStaff(tx);
       });
       return Response.json({ ok: true });
     }
@@ -311,7 +374,16 @@ async function handle(request: Request, ctx: Context) {
               approved: await approve(
                 db(),
                 id,
-                body.all === true ? "all" : ids(),
+                body.all === true
+                  ? "all"
+                  : body.conversation
+                    ? {
+                        conversation: z
+                          .string()
+                          .regex(/^[a-f0-9]{64}$/)
+                          .parse(body.conversation),
+                      }
+                    : ids(),
                 user.name,
               ),
             });

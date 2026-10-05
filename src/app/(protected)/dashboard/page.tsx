@@ -54,6 +54,12 @@ export default async function Dashboard({
         {[
           ["Solicitudes recibidas", m.received, "Total del período", Mail],
           ["Respondidas", m.answered, "Con respuesta válida", CheckCheck],
+          [
+            "Respuestas realizadas",
+            m.responses,
+            "Todos los mensajes de respuesta",
+            Mail,
+          ],
           ["No respondidas", m.unanswered, "Pendientes de atención", Clock],
           [
             "Tasa de respuesta",
@@ -64,7 +70,7 @@ export default async function Dashboard({
           [
             "Tiempo promedio",
             m.answered ? duration(m.average) : "—",
-            "Hasta la primera respuesta",
+            "Primera respuesta · 08:00–17:00",
             Timer,
           ],
         ].map(([label, value, note, Icon]) => {
@@ -108,6 +114,9 @@ export default async function Dashboard({
                     />
                   </span>
                   <b>{p.responses}</b>
+                  <small title="Promedio desde la solicitud hasta cada respuesta, en horario operativo">
+                    {duration(p.average)}
+                  </small>
                 </Link>
               ))
             ) : (

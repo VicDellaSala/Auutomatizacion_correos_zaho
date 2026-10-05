@@ -1,6 +1,6 @@
 # Verificación y decisiones
 
-Fecha: 04/10/2026, America/Caracas.
+Fecha de actualización: 05/10/2026, America/Caracas.
 
 ## Ejemplo real suministrado
 
@@ -22,7 +22,7 @@ El ZIP se inspeccionó únicamente en lectura y mediante el parser local. No se 
 | Remitente Lyliana | 11 |
 | Remitente Yessika | 0 |
 
-La clasificación conservadora del fragmento, considerado aisladamente, produjo 10 solicitudes, 4 correos iniciados, 1 respuesta enlazada con suficiente evidencia y 33 casos para revisión. Este conteo **no representa la atención de un día completo**: faltan originales y otras partes de las conversaciones. No se inventaron relaciones para elevar la cantidad de respuestas. La inspección estructural vio 38 cabeceras In-Reply-To presentes; 34 tenían identificadores no vacíos interpretables por el parser.
+En la versión inicial del 04/10, la clasificación conservadora del fragmento, considerado aisladamente, produjo 10 solicitudes, 4 correos iniciados, 1 respuesta enlazada con suficiente evidencia y 33 casos para revisión. Este conteo **no representa la atención de un día completo**: faltan originales y otras partes de las conversaciones. No se inventaron relaciones para elevar la cantidad de respuestas. La inspección estructural vio 38 cabeceras In-Reply-To presentes; 34 tenían identificadores no vacíos interpretables por el parser.
 
 Se observaron multipart/alternative, multipart/related, multipart/mixed, text/plain, text/html, quoted-printable y base64, con imágenes, PDF y archivos de oficina. El diseño conserva el texto completo y descarta únicamente los bytes de adjuntos después del parseo individual. El estado Zoho se trata como diagnóstico, no como evidencia de lectura o atención.
 
@@ -32,7 +32,7 @@ No se adjuntó un HTML de referencia; el reporte se implementó siguiendo las se
 
 | Verificación | Resultado |
 |---|---|
-| `npm test` | 38 pruebas aprobadas, 4 archivos |
+| `npm test` | 55 pruebas aprobadas, 4 archivos |
 | `npm run lint` | Sin errores ni advertencias |
 | `npm run typecheck` | Correcto |
 | `npm run build` | Build de producción correcto |
@@ -51,8 +51,16 @@ Prueba grande completada: **525.614.714 bytes de ZIP**, 501 EML sintéticos proc
 - Un EML individual de más de 64 MiB se registra como error. El parser MIME usa buffers adicionales al tamaño de la entrada. No se promete que todos los EML posibles funcionen en todos los móviles.
 - Texto completo de más de los límites de validación/petición se rechaza, sin truncarlo.
 - Los casos sin originales fiables requieren revisión manual; un fragmento de día no permite reconstrucción perfecta.
-- Un ZIP por importación, múltiples importaciones acumulativas.
-- Las identidades del equipo se capturan al importar. Cambiar configuración no reatribuye el histórico.
+- Hasta 100 ZIP y 100.000 EML por importación lógica; reanudación con el mismo conjunto de partes.
+- Los cambios de equipo reevalúan staging pendiente; no reatribuyen el histórico aprobado. Julia se añade automáticamente sin sobrescribir su configuración si ya existe.
 - La restauración web y la reconstrucción total de metadata están sujetas a recursos y tiempos del alojamiento; para millones de mensajes se requiere reconciliación incremental y respaldo nativo PostgreSQL.
 - Las credenciales de la base y el despliegue Vercel se configuran fuera del repositorio.
 - La auditoría de dependencias de producción no detectó vulnerabilidades. La cadena de herramientas de desarrollo conserva avisos transitivos de `braces` (ESLint) y `esbuild` (Drizzle Kit). La corrección automática propuesta retrocede a versiones incompatibles; no se aplicó ese downgrade. Estas herramientas no se ejecutan como servicios expuestos de producción.
+
+## Actualización del 05/10/2026
+
+Sin cambios de esquema ni migración, sin conexión a Neon para pruebas y sin limpieza de datos reales. Se validaron cinco ejemplos de horario diario con SQL y JavaScript, varias respuestas por solicitud, heurística sin cabeceras, asociación manual verificada, exclusión de sí mismo/otras respuestas, dependencia automática, Julia, limpieza por rango con procedencias compartidas y rechazo de previews obsoletos.
+
+El navegador comprueba dos ZIP con nombres internos idénticos, aprobación de la respuesta con su original, 82 solicitudes con aprobación de páginas y rechazo del resto, apertura del contenido no respondido y limpieza con confirmación explícita en la base temporal de prueba. Se mantienen comprobaciones de autenticación, CSRF, HTML, respaldo y móvil.
+
+Prueba de carga múltiple grande del 05/10: **525.614.736 bytes en dos ZIP**, 501 EML en una sola importación; mayor petición **65.825 bytes**. No se publicaron los correos sintéticos.

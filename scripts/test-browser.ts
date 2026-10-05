@@ -73,7 +73,9 @@ try {
     .getByLabel("Clave de acceso", { exact: true })
     .fill("incorrect-test-only");
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "Clave incorrecta" })).toBeVisible();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Clave incorrecta" }),
+  ).toBeVisible();
   expect((await pg.query("select * from sessions")).rows).toHaveLength(0);
   await page.getByLabel("Clave de acceso", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
@@ -102,7 +104,7 @@ try {
       headers: "In-Reply-To: <request@test>\r\n",
     }),
   ]);
-  async function importFile(path: string) {
+  async function importFile(path: string | string[]) {
     await page.goto("http://127.0.0.1:3107/import");
     await page.locator('input[type="file"]').setInputFiles(path);
     await page
@@ -138,6 +140,18 @@ try {
   await importFile("test-results/request.zip");
   expect((await pg.query("select * from emails")).rows).toHaveLength(0);
   await approveAll();
+  await page.goto("http://127.0.0.1:3107/unanswered");
+  await page
+    .getByRole("link", { name: "Abrir correo completo →" })
+    .first()
+    .click();
+  await expect(page.getByText("No respondida", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Buenos días, solicito un cambio.", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByText("Origen:", { exact: false })).toContainText(
+    "request.zip",
+  );
   expect(
     (
       await pg.query(
@@ -190,6 +204,144 @@ try {
     data: {},
   });
   expect(csrf.status()).toBe(400);
+  // Both ZIPs contain the same internal filename; provenance must remain distinct.
+  await zip("test-results/part-one.zip", [
+    eml({ id: "multi@test", subject: "Afiliación comercio 501" }),
+  ]);
+  await zip("test-results/part-two.zip", [
+    eml({
+      id: "multi-reply@test",
+      from: staff,
+      date: "Sun, 04 Oct 2026 09:00:00 -0400",
+      subject: "Re: Afiliación comercio 501",
+      headers: "Cc: customer@example.test\r\n",
+    }),
+  ]);
+  await importFile(["test-results/part-one.zip", "test-results/part-two.zip"]);
+  await page.getByRole("link", { name: /^Respuestas realizadas/ }).click();
+  await expect(page.locator('.review-row input[type="checkbox"]')).toHaveCount(
+    1,
+  );
+  await page.locator(".review-row summary").first().click();
+  await expect(
+    page.getByText("Asociada automáticamente:", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Al aprobar este correo", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Resolver asociación pendiente", { exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Seleccionar esta página", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Aprobar e incorporar seleccionados",
+      exact: true,
+    })
+    .click();
+  await expect(page.locator(".review-row")).toHaveCount(0);
+  expect(
+    (await pg.query("select * from emails where data->>'subject' like '%501%'"))
+      .rows,
+  ).toHaveLength(2);
+  await zip(
+    "test-results/pages.zip",
+    Array.from({ length: 82 }, (_, i) =>
+      eml({ id: `pages-${i}@test`, subject: `Solicitud de prueba ${i}` }),
+    ),
+  );
+  await importFile("test-results/pages.zip");
+  const reviewUrl = page.url();
+  await expect(
+    page.locator('.review-row input[type="checkbox"]:enabled'),
+  ).toHaveCount(30);
+  await page
+    .getByRole("button", { name: "Seleccionar esta página", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Aprobar e incorporar seleccionados",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText("0 seleccionados", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.review-row input[type="checkbox"]:checked'),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('.review-row input[type="checkbox"]:enabled'),
+  ).toHaveCount(30);
+  await page.getByRole("link", { name: "Siguiente", exact: true }).click();
+  await expect(
+    page.locator('.review-row input[type="checkbox"]:enabled'),
+  ).toHaveCount(22);
+  await page
+    .getByRole("button", { name: "Seleccionar esta página", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Aprobar e incorporar seleccionados",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.locator('.review-row input[type="checkbox"]:enabled'),
+  ).toHaveCount(30);
+  await page
+    .getByRole("button", { name: "Seleccionar esta página", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Rechazar seleccionados", exact: true })
+    .click();
+  await expect(page.locator(".review-row")).toHaveCount(0);
+  expect(
+    (
+      await pg.query(
+        "select * from staged_emails where \"importId\"=$1 and state='APPROVED'",
+        [reviewUrl.split("/").at(-1)],
+      )
+    ).rows,
+  ).toHaveLength(52);
+  // Preview is non-destructive; explicit confirmation executes only against this isolated test DB.
+  await page.goto("http://127.0.0.1:3107/settings");
+  await expect(
+    page.getByRole("heading", { name: "Limpiar datos importados" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Previsualizar limpieza", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Escribe ELIMINAR para confirmar"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Eliminar importaciones indicadas",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  expect((await pg.query("select * from emails")).rows.length).toBeGreaterThan(
+    0,
+  );
+  await page.screenshot({
+    path: "test-results/cleanup-preview.png",
+    fullPage: true,
+  });
+  await page.getByLabel("Escribe ELIMINAR para confirmar").fill("ELIMINAR");
+  await page
+    .getByRole("button", {
+      name: "Eliminar importaciones indicadas",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText("Limpieza completada.", { exact: false }),
+  ).toBeVisible();
+  expect((await pg.query("select * from emails")).rows).toHaveLength(0);
+  expect((await pg.query("select * from users")).rows).toHaveLength(1);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("http://127.0.0.1:3107/dashboard");
   await expect(
@@ -202,13 +354,24 @@ try {
     ),
   ).toBe(true);
   if (process.argv.includes("--large")) {
-    const path = "test-results/large-synthetic.zip",
-      output = createWriteStream(path);
-    const writer = new ZipWriter(
+    const paths = [
+        "test-results/large-part-1.zip",
+        "test-results/large-part-2.zip",
+      ],
+      output = createWriteStream(paths[0]);
+    let writer = new ZipWriter(
       Writable.toWeb(output) as WritableStream<Uint8Array>,
     );
     // About 501 MiB on disk, written one entry at a time. No real corporate data.
     for (let n = 0; n < 501; n++) {
+      if (n === 250) {
+        await writer.close();
+        writer = new ZipWriter(
+          Writable.toWeb(
+            createWriteStream(paths[1]),
+          ) as WritableStream<Uint8Array>,
+        );
+      }
       const raw =
         eml({ id: `large-${n}@test` }).split("Content-Type:")[0] +
         `Content-Type: multipart/mixed; boundary="x"\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nSolicitud sintética ${n}\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="synthetic.bin"\r\nContent-Transfer-Encoding: base64\r\n\r\n${"AAAA".repeat(262144)}\r\n--x--`;
@@ -220,8 +383,10 @@ try {
       if (r.url().includes("staging-batch"))
         maxBatch = Math.max(maxBatch, r.postDataBuffer()?.byteLength ?? 0);
     });
-    console.log(`ZIP sintético listo: ${statSync(path).size} bytes`);
-    await importFile(path);
+    console.log(
+      `ZIP sintéticos listos: ${paths.reduce((n, p) => n + statSync(p).size, 0)} bytes en dos partes`,
+    );
+    await importFile(paths);
     expect(maxBatch).toBeLessThan(3200000);
     const count = await pg.query<{ count: number }>(
       "select count(*)::int as count from staged_emails where state='PENDING'",
@@ -237,7 +402,7 @@ try {
     .click();
   await expect(page).toHaveURL(/login/);
   console.log(
-    "E2E OK: autenticación, worker ZIP, staging, aprobación, cambio histórico, persistencia, HTML, respaldo, CSRF y móvil.",
+    "E2E OK: autenticación, varios ZIP, dependencias, 82 solicitudes con aprobación parcial y rechazo, detalle no respondido, limpieza confirmada, staging, histórico, HTML, respaldo, CSRF y móvil.",
   );
 } catch (error) {
   console.error(appLog.slice(-2500));

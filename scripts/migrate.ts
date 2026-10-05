@@ -3,6 +3,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db } from "../src/lib/db";
 import { agents, settings } from "../src/lib/db/schema";
 export const initialAgents = [
+  { name: "Julia Lanz G", email: "julia.lanz@credicard.com.ve" },
   { name: "Geraldine Serrano", email: "geraldine.serrano@credicard.com.ve" },
   { name: "Rubén Castro", email: "ruben.castro@credicard.com.ve" },
   { name: "Lyliana Tarazona", email: "lyliana.tarazona@credicard.com.ve" },

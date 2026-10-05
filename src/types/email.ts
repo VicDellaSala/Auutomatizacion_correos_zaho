@@ -20,7 +20,12 @@ export type EmailData = {
 };
 export type Kind =
   "REQUEST" | "RESPONSE" | "STAFF_SENT" | "FOLLOWUP" | "REVIEW";
-export type Decision = { kind: Exclude<Kind, "REVIEW">; targetKey?: string };
+export type Decision = {
+  kind: Exclude<Kind, "REVIEW">;
+  targetKey?: string;
+  requestStatus?: "UNANSWERED";
+  excludedResponseKeys?: string[];
+};
 export type MatchMail = Pick<
   EmailData,
   | "key"
@@ -37,12 +42,15 @@ export type MatchMail = Pick<
   staffName: string | null;
   addressed: boolean;
   decision: Decision | null;
+  approvedKind?: Kind;
+  approvedRootKey?: string | null;
 };
 export type Match = {
   kind: Kind;
   rootKey: string | null;
   reason: string;
   candidates: string[];
+  dependencies?: string[];
 };
 export type ImportStatus =
   | "PROCESSING"

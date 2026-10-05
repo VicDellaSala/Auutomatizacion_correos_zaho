@@ -38,7 +38,10 @@ export function errorResponse(error: unknown) {
   if (error instanceof AccessConfigurationError)
     return Response.json({ error: error.message }, { status: 503 });
   if (error instanceof DomainError)
-    return Response.json({ error: error.message }, { status: 400 });
+    return Response.json(
+      { error: error.message, issues: error.issues },
+      { status: 400 },
+    );
   if (error instanceof z.ZodError)
     return Response.json(
       {

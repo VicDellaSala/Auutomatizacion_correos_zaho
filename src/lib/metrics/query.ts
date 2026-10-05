@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { businessTimeSql } from "./business-time";
 import type { Database } from "@/lib/db";
 import type { EmailData, Kind } from "@/types/email";
 export type Filters = {
@@ -42,10 +43,10 @@ export function searchWhere(f: Filters) {
 export async function metrics(db: Database, f: Filters) {
   const result =
     await db.execute(sql`select count(*)::int as received, count(c."firstResponseKey")::int as answered,
-    (count(*)-count(c."firstResponseKey"))::int as unanswered, coalesce(avg(c."responseSeconds"),0)::float as average
+    (count(*)-count(c."firstResponseKey"))::int as unanswered, coalesce(avg(case when c."firstResponseAt" is not null then ${businessTimeSql(sql`e.date`, sql`c."firstResponseAt"`)} end),0)::float as average
     from emails e left join conversations c on c."rootKey"=e.key where e.kind='REQUEST' ${rangeWhere(f)} ${searchWhere(f)}`);
   const team =
-    await db.execute(sql`select r."staffName" as name, count(*)::int as responses, count(distinct e.key)::int as requests
+    await db.execute(sql`select r."staffName" as name, count(*)::int as responses, count(distinct e.key)::int as requests, avg(${businessTimeSql(sql`e.date`, sql`r.date`)})::float as average
     from emails r join emails e on e.key=r."rootKey" where r.kind='RESPONSE' ${rangeWhere(f)} ${searchWhere(f)} group by r."staffName" order by responses desc`);
   const initiated = await db.execute(
     sql`select e."staffName" as name,count(*)::int as count from emails e where e.kind='STAFF_SENT' ${rangeWhere(f)} ${searchWhere(f)} group by e."staffName"`,
@@ -62,7 +63,13 @@ export async function metrics(db: Database, f: Filters) {
   return {
     ...row,
     rate: row.received ? (100 * row.answered) / row.received : 0,
-    team: team.rows as { name: string; responses: number; requests: number }[],
+    responses: team.rows.reduce((n, r) => n + Number(r.responses), 0),
+    team: team.rows as {
+      name: string;
+      responses: number;
+      requests: number;
+      average: number;
+    }[],
     initiated: initiated.rows as { name: string; count: number }[],
     pending: Number(pending.rows[0].count),
   };
@@ -82,7 +89,7 @@ export async function mailList(db: Database, f: Filters, pageSize = 40) {
         : sql``;
   const where = sql`${kind} ${state} ${rangeWhere(f)} ${searchWhere(f)}`;
   const result =
-    await db.execute(sql`select e.key,e.data,e.date,e.kind,e."staffName",c."firstResponseAt",c."firstResponseKey",c."responseSeconds",coalesce(c."responseCount",0) as "responseCount",r."staffName" as responder,extract(epoch from (now()-e.date))::float as "elapsedSeconds",
+    await db.execute(sql`select e.key,e.data,e.date,e.kind,e."staffName",c."firstResponseAt",c."firstResponseKey",case when c."firstResponseAt" is not null then ${businessTimeSql(sql`e.date`, sql`c."firstResponseAt"`)} end as "responseSeconds",coalesce(c."responseCount",0) as "responseCount",r."staffName" as responder,${businessTimeSql(sql`e.date`, sql`now()`)} as "elapsedSeconds",
     (select string_agg(i.filename,', ') from email_imports p join imports i on i.id=p."importId" where p."emailKey"=e.key) as source
     from emails e left join conversations c on c."rootKey"=e.key left join emails r on r.key=c."firstResponseKey" where ${where}
     order by e.date desc,e.key limit ${pageSize} offset ${(Math.max(1, f.page ?? 1) - 1) * pageSize}`);
