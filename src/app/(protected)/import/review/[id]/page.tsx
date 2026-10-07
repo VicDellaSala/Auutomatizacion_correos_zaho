@@ -8,6 +8,7 @@ import { PageHeading } from "@/components/page-heading";
 import { ReviewClient } from "@/components/review-client";
 import { PauseImport } from "@/components/pause-import";
 import { bytes, kindLabel, statusLabel } from "@/lib/format";
+import { attentionLabel, attentionState } from "@/lib/metrics/attention";
 import { businessSeconds } from "@/lib/metrics/business-time";
 export default async function Review({
   params,
@@ -42,12 +43,18 @@ export default async function Review({
     .filter(
       ([key, m]) =>
         !q.group ||
-        m.kind === q.group ||
-        (m.kind === "REQUEST" &&
-          (q.group === "ANSWERED"
-            ? proposed.answeredRoots.includes(key)
-            : q.group === "UNANSWERED" &&
-              !proposed.answeredRoots.includes(key))),
+        (q.group === "IGNORED"
+          ? proposed.ignoredKeys.includes(key)
+          : !proposed.ignoredKeys.includes(key) &&
+            (m.kind === q.group ||
+              (m.kind === "REQUEST" &&
+                (q.group === "ANSWERED"
+                  ? proposed.answeredRoots.includes(key)
+                  : q.group === "AFTER_HOURS"
+                    ? proposed.afterHoursRoots.includes(key)
+                    : q.group === "UNANSWERED" &&
+                      !proposed.answeredRoots.includes(key) &&
+                      !proposed.afterHoursRoots.includes(key))))),
     )
     .map(([key]) => key);
   const where = and(
@@ -83,6 +90,8 @@ export default async function Review({
         .select({
           key: s.emails.key,
           data: s.emails.data,
+          kind: s.emails.kind,
+          decision: s.emails.decision,
           first: s.conversations.firstResponseKey,
         })
         .from(s.emails)
@@ -120,29 +129,47 @@ export default async function Review({
       state: r.state,
       decision: r.decision,
       attention:
-        match.kind === "REQUEST"
-          ? proposed.answeredRoots.includes(r.key)
-            ? "Respondida"
-            : "No respondida"
-          : undefined,
+        attentionLabel[
+          attentionState(
+            { kind: match.kind, date: r.data.date, decision: r.decision },
+            proposed.answeredRoots.includes(r.key),
+          )
+        ],
       needsOriginal:
         !!match.rootKey &&
         match.rootKey !== r.key &&
         !originals.some((o) => o.key === match.rootKey),
       match,
-      ...(old && match.kind === "RESPONSE"
+      ...(old &&
+      match.kind === "RESPONSE" &&
+      !old.decision?.ignored &&
+      !r.decision?.ignored
         ? {
             change: {
               subject: old.data.subject,
               date: old.data.date,
               seconds: businessSeconds(old.data.date, r.data.date),
-              wasAnswered: !!old.first,
+              previousState:
+                attentionLabel[
+                  attentionState(
+                    {
+                      kind: old.kind,
+                      date: old.data.date,
+                      decision: old.decision,
+                    },
+                    old.first,
+                  )
+                ],
               responder: r.staffName ?? r.data.from.address,
             },
           }
         : {}),
     };
   });
+  const people = await db()
+    .select({ id: s.agents.id, name: s.agents.name })
+    .from(s.agents)
+    .orderBy(s.agents.name);
   return (
     <>
       <PageHeading
@@ -165,7 +192,7 @@ export default async function Review({
       </div>
       <div className="notice">
         Estos resultados son una previsualización. {proposed.changes.length}{" "}
-        solicitudes históricas pasarían de no respondidas a respondidas al
+        solicitudes históricas pasarían de sin respuesta a respondidas al
         aprobar todas sus respuestas válidas.
       </div>
       {["PARTIAL", "PROCESSING", "ERROR"].includes(imp.status) && (
@@ -184,6 +211,10 @@ export default async function Review({
         </div>
       )}
       <div className="metrics">
+        <Link className="metric" href="?group=AFTER_HOURS">
+          <div className="metric-label">Pendientes fuera del horario</div>
+          <div className="metric-value">{proposed.afterHours}</div>
+        </Link>
         <Link className="metric" href="?group=ANSWERED">
           <div className="metric-label">
             Solicitudes nuevas que quedarían respondidas
@@ -241,6 +272,7 @@ export default async function Review({
         key={`${q.group ?? "all"}-${page}-${JSON.stringify(readyRows.map((r) => [r.id, r.match, r.decision]))}`}
         id={id}
         rows={readyRows}
+        people={people}
         editable={editable}
         canRevert={!!imp.approvedAt && imp.status !== "REVERTED"}
         focus={q.focus}

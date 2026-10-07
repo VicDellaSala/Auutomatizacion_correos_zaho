@@ -29,8 +29,12 @@ export const emailSchema = z.object({
     .max(1000),
   zohoStatus: z.string().max(2000).nullable(),
 });
-export const decisionSchema = z.object({
-  requestStatus: z.literal("UNANSWERED").optional(),
+const decisionValuesSchema = z.object({
+  requestStatus: z.enum(["UNANSWERED", "ANSWERED", "AFTER_HOURS"]).optional(),
+  ignored: z.boolean().optional(),
+  ignoredReason: z.string().trim().max(2000).optional(),
+  responsibleId: z.uuid().optional(),
+  responsibleName: z.string().max(200).optional(),
   excludedResponseKeys: z
     .array(z.string().regex(/^[a-f0-9]{64}$/))
     .max(100000)
@@ -40,4 +44,28 @@ export const decisionSchema = z.object({
     .string()
     .regex(/^[a-f0-9]{64}$/)
     .optional(),
+});
+const snapshotSchema = z.object({
+  kind: z.enum(["REQUEST", "RESPONSE", "STAFF_SENT", "FOLLOWUP", "REVIEW"]),
+  rootKey: z.string().nullable(),
+  staffName: z.string().nullable(),
+  decision: decisionValuesSchema.nullable(),
+});
+export const decisionSchema = decisionValuesSchema.extend({
+  audit: z
+    .array(
+      z.object({
+        at: z.iso.datetime({ offset: true }),
+        userId: z.string().max(320),
+        userName: z.string().max(320),
+        before: snapshotSchema,
+        after: snapshotSchema,
+      }),
+    )
+    .optional(),
+});
+// Audit, excluded response keys and resolved agent names are server-owned.
+export const correctionSchema = decisionValuesSchema.omit({
+  excludedResponseKeys: true,
+  responsibleName: true,
 });

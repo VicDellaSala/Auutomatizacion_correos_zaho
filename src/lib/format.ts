@@ -29,6 +29,8 @@ export const kindLabel: Record<string, string> = {
   STAFF_SENT: "Correo iniciado",
   FOLLOWUP: "Seguimiento",
   REVIEW: "Requiere revisión",
+  IGNORED: "Ignorados",
+  AFTER_HOURS: "Pendientes fuera del horario",
 };
 export const statusLabel: Record<string, string> = {
   PROCESSING: "Procesando / interrumpida",

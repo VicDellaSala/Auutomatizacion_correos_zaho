@@ -116,8 +116,8 @@ it("asunto genérico sin participantes compatibles o con dos originales permanec
   b.references = [];
   expect(matchEmails([a, b, c]).get(b.key)?.kind).toBe("REVIEW");
   b.cc = [];
-  expect(matchEmails([a, b]).get(b.key)?.kind).toBe("REVIEW");
+  expect(matchEmails([a, b]).get(b.key)?.kind).toBe("STAFF_SENT");
   b.inReplyTo = [];
   b.references = [];
-  expect(matchEmails([a, b]).get(b.key)?.kind).toBe("REVIEW");
+  expect(matchEmails([a, b]).get(b.key)?.kind).toBe("STAFF_SENT");
 });

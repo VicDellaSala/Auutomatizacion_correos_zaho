@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { DecisionEditor } from "./decision-editor";
 import { EmailDetail } from "./email-detail";
 import { dateTime, duration, kindLabel } from "@/lib/format";
 import type { Decision, EmailData, Match } from "@/types/email";
@@ -17,7 +18,7 @@ type ReviewRow = {
     subject: string;
     date: string;
     seconds: number;
-    wasAnswered: boolean;
+    previousState: string;
     responder: string;
   };
 };
@@ -27,12 +28,14 @@ export function ReviewClient({
   editable,
   canRevert,
   focus,
+  people,
 }: {
   id: string;
   rows: ReviewRow[];
   editable: boolean;
   canRevert: boolean;
   focus?: string;
+  people: { id: string; name: string }[];
 }) {
   const router = useRouter();
   const [selected, setSelected] = useState<string[]>([]),
@@ -107,6 +110,13 @@ export function ReviewClient({
               Deseleccionar todo
             </button>
             <span className="muted">{selected.length} seleccionados</span>
+            <button
+              className="button secondary small"
+              disabled={busy}
+              onClick={() => router.refresh()}
+            >
+              Reanalizar importación
+            </button>
             <button
               className="button"
               disabled={busy || !selected.length}
@@ -217,7 +227,9 @@ export function ReviewClient({
                       ? r.state === "APPROVED"
                         ? "Aprobado"
                         : "Rechazado"
-                      : kindLabel[r.match.kind]}
+                      : r.decision?.ignored
+                        ? "Ignorado"
+                        : kindLabel[r.match.kind]}
                   </span>
                 </summary>
                 <p className="muted" style={{ fontSize: 12 }}>
@@ -251,8 +263,7 @@ export function ReviewClient({
                     <p>
                       Solicitud recibida: {dateTime(r.change.date)}
                       <br />
-                      Estado actual:{" "}
-                      {r.change.wasAnswered ? "Respondida" : "No respondida"}
+                      Estado actual: {r.change.previousState}
                       <br />
                       Si apruebas: Respondida · Respuesta de{" "}
                       {r.change.responder}
@@ -266,21 +277,20 @@ export function ReviewClient({
                 )}
                 <EmailDetail data={r.data} />
                 {editable && r.state === "PENDING" && (
-                  <ManualDecision
+                  <DecisionEditor
                     importId={id}
                     mailKey={r.key}
-                    initialKind={
-                      r.match.kind === "REVIEW"
-                        ? (r.decision?.kind ?? "REQUEST")
-                        : r.match.kind
-                    }
-                    initialStatus={r.decision?.requestStatus}
-                    unresolved={r.match.kind === "REVIEW"}
-                    initialTarget={
-                      r.match.rootKey && r.match.rootKey !== r.key
-                        ? r.match.rootKey
-                        : ""
-                    }
+                    people={people}
+                    initial={{
+                      ...r.decision,
+                      kind:
+                        r.match.kind === "REVIEW"
+                          ? (r.decision?.kind ?? "REQUEST")
+                          : r.match.kind,
+                      ...(r.match.rootKey && r.match.rootKey !== r.key
+                        ? { targetKey: r.match.rootKey }
+                        : {}),
+                    }}
                     onSave={(decision) =>
                       action("decide", { rowId: r.id, decision })
                     }
@@ -315,152 +325,5 @@ export function ReviewClient({
         )}
       </div>
     </>
-  );
-}
-function ManualDecision({
-  importId,
-  mailKey,
-  initialKind,
-  initialStatus,
-  unresolved,
-  initialTarget,
-  onSave,
-  busy,
-}: {
-  importId: string;
-  mailKey: string;
-  initialKind: Decision["kind"];
-  initialStatus?: "UNANSWERED";
-  unresolved: boolean;
-  initialTarget: string;
-  onSave: (d: Decision) => void;
-  busy: boolean;
-}) {
-  const [kind, setKind] = useState<Decision["kind"]>(initialKind),
-    [target, setTarget] = useState(initialTarget),
-    [q, setQ] = useState(""),
-    [results, setResults] = useState<
-      { key: string; subject: string; date: string; from: string }[]
-    >([]),
-    [error, setError] = useState("");
-  const [status, setStatus] = useState(initialStatus ?? "AUTO");
-  return (
-    <details style={{ marginTop: 18 }}>
-      <summary>
-        {unresolved
-          ? "Resolver asociación pendiente"
-          : "Corregir clasificación (opcional)"}
-      </summary>
-      <div className="filters" style={{ marginTop: 12 }}>
-        <label>
-          Clasificación
-          <select
-            value={kind}
-            onChange={(e) => setKind(e.target.value as Decision["kind"])}
-          >
-            <option value="REQUEST">Solicitud nueva</option>
-            <option value="RESPONSE">Respuesta del personal</option>
-            <option value="STAFF_SENT">Correo iniciado por personal</option>
-            <option value="FOLLOWUP">Seguimiento de conversación</option>
-          </select>
-        </label>
-        {kind === "REQUEST" && (
-          <label>
-            Estado de la solicitud
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="AUTO">
-                Calcular a partir de las respuestas válidas
-              </option>
-              <option value="UNANSWERED">
-                No respondida: excluir las asociaciones actuales
-              </option>
-            </select>
-            <small>
-              Una respuesta nueva aprobada posteriormente podrá cambiar el
-              estado.
-            </small>
-          </label>
-        )}
-        {(kind === "RESPONSE" || kind === "FOLLOWUP") && (
-          <>
-            <label>
-              Buscar correo original
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Asunto o remitente"
-              />
-            </label>
-            <button
-              className="button secondary"
-              type="button"
-              onClick={async () => {
-                try {
-                  const r = await fetch(
-                    `/api/lookup?importId=${importId}&exclude=${mailKey}&q=${encodeURIComponent(q)}`,
-                  );
-                  const v = await r.json();
-                  if (!r.ok) throw new Error(v.error);
-                  setResults(v.rows);
-                  setError("");
-                } catch (e) {
-                  setError(
-                    e instanceof Error ? e.message : "No se pudo buscar",
-                  );
-                }
-              }}
-            >
-              Buscar
-            </button>
-            <label>
-              Asociar a
-              <select
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-              >
-                <option value="">Selecciona una solicitud</option>
-                {target && !results.some((r) => r.key === target) && (
-                  <option value={target}>
-                    Relación detectada en cabeceras
-                  </option>
-                )}
-                {results.map((r) => (
-                  <option key={r.key} value={r.key}>
-                    {r.subject} · {r.from} · {dateTime(r.date)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </>
-        )}
-        <button
-          className="button secondary"
-          disabled={
-            busy || ((kind === "RESPONSE" || kind === "FOLLOWUP") && !target)
-          }
-          onClick={() =>
-            onSave({
-              kind,
-              ...(kind === "REQUEST" && status === "UNANSWERED"
-                ? { requestStatus: "UNANSWERED" as const }
-                : {}),
-              ...(kind === "RESPONSE" || kind === "FOLLOWUP"
-                ? { targetKey: target }
-                : {}),
-            })
-          }
-        >
-          Guardar decisión
-        </button>
-      </div>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <p className="muted" style={{ fontSize: 11 }}>
-        Guardar una decisión no incorpora el correo. Después debes aprobarlo.
-      </p>
-    </details>
   );
 }

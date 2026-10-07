@@ -1,6 +1,6 @@
 # Verificación y decisiones
 
-Fecha de actualización: 05/10/2026, America/Caracas.
+Fecha de actualización: 07/10/2026, America/Caracas.
 
 ## Ejemplo real suministrado
 
@@ -32,7 +32,7 @@ No se adjuntó un HTML de referencia; el reporte se implementó siguiendo las se
 
 | Verificación | Resultado |
 |---|---|
-| `npm test` | 55 pruebas aprobadas, 4 archivos |
+| `npm test` | 75 pruebas aprobadas, 4 archivos |
 | `npm run lint` | Sin errores ni advertencias |
 | `npm run typecheck` | Correcto |
 | `npm run build` | Build de producción correcto |
@@ -50,7 +50,7 @@ Prueba grande completada: **525.614.714 bytes de ZIP**, 501 EML sintéticos proc
 - Un ZIP completo nunca se convierte a ArrayBuffer ni se envía al servidor; lectura por rangos, un EML y un lote en memoria.
 - Un EML individual de más de 64 MiB se registra como error. El parser MIME usa buffers adicionales al tamaño de la entrada. No se promete que todos los EML posibles funcionen en todos los móviles.
 - Texto completo de más de los límites de validación/petición se rechaza, sin truncarlo.
-- Los casos sin originales fiables requieren revisión manual; un fragmento de día no permite reconstrucción perfecta.
+- Los casos ambiguos o contradictorios requieren revisión manual. El personal reconocido sin original compatible se propone como correo iniciado; un fragmento de día no permite reconstrucción perfecta.
 - Hasta 100 ZIP y 100.000 EML por importación lógica; reanudación con el mismo conjunto de partes.
 - Los cambios de equipo reevalúan staging pendiente; no reatribuyen el histórico aprobado. Julia se añade automáticamente sin sobrescribir su configuración si ya existe.
 - La restauración web y la reconstrucción total de metadata están sujetas a recursos y tiempos del alojamiento; para millones de mensajes se requiere reconciliación incremental y respaldo nativo PostgreSQL.
@@ -64,3 +64,11 @@ Sin cambios de esquema ni migración, sin conexión a Neon para pruebas y sin li
 El navegador comprueba dos ZIP con nombres internos idénticos, aprobación de la respuesta con su original, 82 solicitudes con aprobación de páginas y rechazo del resto, apertura del contenido no respondido y limpieza con confirmación explícita en la base temporal de prueba. Se mantienen comprobaciones de autenticación, CSRF, HTML, respaldo y móvil.
 
 Prueba de carga múltiple grande del 05/10: **525.614.736 bytes en dos ZIP**, 501 EML en una sola importación; mayor petición **65.825 bytes**. No se publicaron los correos sintéticos.
+
+## Finalización del 07/10/2026
+
+Se conservaron los cambios locales pendientes. Pasaron 75 pruebas unitarias e integración, lint, typecheck y build de producción. El E2E de Chrome pasó con autenticación, dos ZIP, aprobación parcial, pendientes fuera del horario, ignorar/restaurar, edición histórica, auditoría, respuesta sin asociación, reportes, respaldo, CSRF y móvil. Los cinco nombres del personal se cubren mediante configuración sintética; no se incluyen EML ni ZIP corporativos. La prueba de ZIP mayor de 500 MB descrita arriba corresponde al 05/10 y no se repitió en esta ronda.
+
+Se verifican el umbral exacto 16:50, permanencia indefinida del pendiente hasta respuesta o corrección, respuesta de otro día solo al aprobar, búsqueda sin límite de siete días para asuntos específicos compatibles, exclusión de ignorados de tasa/tiempo, restauración, respuesta manual sin correo ficticio, respuesta sin asociación y recuperación posterior del original, edición concurrente rechazada y auditoría protegida contra inyección. La reasociación manual elimina una exclusión anterior y audita ambos registros.
+
+No hubo migración de esquema, reset ni eliminación de datos de producción. Los nuevos campos viven en el JSONB de decisiones existente. El acceso compartido conserva su autenticación; su auditoría identifica la cuenta compartida.

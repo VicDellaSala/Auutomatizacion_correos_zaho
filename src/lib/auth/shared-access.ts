@@ -6,7 +6,9 @@ import { users } from "@/lib/db/schema";
 export class AccessConfigurationError extends Error {}
 export const sharedAccountEmail = "shared-access@internal.invalid";
 
-export function accessConfiguration(env: Record<string, string | undefined> = process.env) {
+export function accessConfiguration(
+  env: Record<string, string | undefined> = process.env,
+) {
   const password = env.APP_PASSWORD;
   const secret = env.AUTH_SECRET;
   if (!password || password === "replace-with-your-private-access-password") {

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { asc, eq, or, inArray, and } from "drizzle-orm";
 import { businessSeconds } from "@/lib/metrics/business-time";
+import { attentionLabel, attentionState } from "@/lib/metrics/attention";
 import { db } from "@/lib/db";
 import {
   emails,
@@ -70,21 +71,32 @@ export default async function Conversation({
         <PageHeading
           title={e.data.subject}
           description={`${e.data.from.name || e.data.from.address} · ${dateTime(e.date)}`}
-        />
+        >
+          <Link className="button" href={`/emails/${key}/edit`}>
+            Editar correo
+          </Link>
+        </PageHeading>
       </div>
       <div className="notice">
         <b>
-          {e.kind === "REVIEW"
-            ? "Requiere revisión tras cambios en el histórico"
-            : e.kind === "STAFF_SENT"
-              ? "Correo iniciado por personal"
-              : c?.firstResponseKey
-                ? "Respondida"
-                : "No respondida"}
+          {
+            attentionLabel[
+              attentionState(
+                e.decision?.ignored ? e : original,
+                c?.firstResponseKey,
+              )
+            ]
+          }
         </b>{" "}
-        · Primera respuesta:{" "}
+        {original.decision?.requestStatus === "ANSWERED" &&
+          !c?.firstResponseKey &&
+          " · Estado ajustado manualmente · "}
+        {e.decision?.ignored &&
+          ` · ${e.decision.ignoredReason ?? "Sin motivo"} · `}
+        {e.kind === "RESPONSE" && !e.rootKey && " · Sin asociación · "}· Primera
+        respuesta:{" "}
         {duration(
-          c?.firstResponseAt
+          c?.firstResponseAt && !e.decision?.ignored
             ? businessSeconds(original.date, c.firstResponseAt)
             : null,
         )}{" "}
@@ -99,9 +111,14 @@ export default async function Conversation({
                 <span
                   className={`badge ${mail.kind === "RESPONSE" ? "green" : ""}`}
                 >
-                  {mail.key !== c?.firstResponseKey && mail.kind === "RESPONSE"
-                    ? "Respuesta adicional"
-                    : kindLabel[mail.kind]}
+                  {mail.decision?.ignored
+                    ? "Ignorado"
+                    : mail.kind === "RESPONSE" && !mail.rootKey
+                      ? "Respuesta sin asociación"
+                      : mail.key !== c?.firstResponseKey &&
+                          mail.kind === "RESPONSE"
+                        ? "Respuesta adicional"
+                        : kindLabel[mail.kind]}
                 </span>
                 <h3 style={{ marginTop: 8 }}>
                   {mail.staffName ||
@@ -114,12 +131,26 @@ export default async function Conversation({
               </span>
             </div>
             <div className="panel-body">
-              {mail.kind === "RESPONSE" && (
+              <Link
+                className="button secondary small"
+                href={`/emails/${mail.key}/edit`}
+              >
+                Editar / modificar
+              </Link>
+              {mail.decision?.ignored && (
                 <p>
-                  Tiempo operativo desde la solicitud:{" "}
-                  {duration(businessSeconds(original.date, mail.date))}
+                  Motivo: {mail.decision.ignoredReason || "Sin motivo indicado"}
                 </p>
               )}
+              {mail.kind === "RESPONSE" &&
+                mail.rootKey &&
+                !mail.decision?.ignored &&
+                !original.decision?.ignored && (
+                  <p>
+                    Tiempo operativo desde la solicitud:{" "}
+                    {duration(businessSeconds(original.date, mail.date))}
+                  </p>
+                )}
               <p>
                 Origen:{" "}
                 {sources

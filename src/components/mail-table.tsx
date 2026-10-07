@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Inbox } from "lucide-react";
 import { dateTime, duration } from "@/lib/format";
 import type { MailRow } from "@/lib/metrics/query";
+import { attentionLabel } from "@/lib/metrics/attention";
 export function MailTable({ rows }: { rows: MailRow[] }) {
   const sent =
     rows.length > 0 && rows.every((row) => row.kind === "STAFF_SENT");
@@ -30,6 +31,12 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
               <td>
                 <Link className="subject" href={`/conversations/${r.key}`}>
                   {r.data.subject}
+                </Link>
+                <Link
+                  className="button secondary small"
+                  href={`/emails/${r.key}/edit`}
+                >
+                  Editar
                 </Link>
                 <div className="muted">
                   {r.data.from.name || r.data.from.address}
@@ -61,14 +68,18 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
                 <span
                   className={`badge ${r.kind === "REVIEW" ? "red" : r.firstResponseKey ? "green" : r.kind === "STAFF_SENT" ? "" : "amber"}`}
                 >
-                  {r.kind === "REVIEW"
-                    ? "Requiere revisión"
-                    : r.kind === "STAFF_SENT"
-                      ? "Correo iniciado"
-                      : r.firstResponseKey
-                        ? "Respondida"
-                        : "No respondida"}
+                  {attentionLabel[r.attention]}
                 </span>
+                {r.decision?.requestStatus === "ANSWERED" &&
+                  !r.firstResponseKey && (
+                    <div className="preview">Estado ajustado manualmente</div>
+                  )}
+                {r.attention === "IGNORED" && (
+                  <div className="preview">{r.decision?.ignoredReason}</div>
+                )}
+                {r.kind === "RESPONSE" && !r.rootKey && (
+                  <div className="preview">Sin asociación</div>
+                )}
               </td>
               <td>
                 {r.responder || r.staffName || "—"}
@@ -78,12 +89,18 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
               </td>
               <td style={{ whiteSpace: "nowrap" }}>
                 {duration(
-                  r.responseSeconds ??
-                    (r.kind === "REQUEST" ? r.elapsedSeconds : null),
+                  r.attention === "IGNORED" ||
+                    (r.decision?.requestStatus === "ANSWERED" &&
+                      !r.firstResponseKey)
+                    ? null
+                    : (r.responseSeconds ??
+                        (r.kind === "REQUEST" ? r.elapsedSeconds : null)),
                 )}
-                {!r.firstResponseKey && r.kind === "REQUEST" && (
-                  <div className="preview">transcurrido</div>
-                )}
+                {!r.firstResponseKey &&
+                  r.kind === "REQUEST" &&
+                  ["UNANSWERED", "AFTER_HOURS"].includes(r.attention) && (
+                    <div className="preview">transcurrido</div>
+                  )}
               </td>
             </tr>
           ))}

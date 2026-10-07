@@ -1,6 +1,14 @@
 import type { Match, MatchMail } from "@/types/email";
+import { normalizeSubject } from "@/lib/email/normalize";
 const generic =
   /^(solicitud|consulta|informaci[oó]n|requerimiento|soporte|sin asunto|\(sin asunto\))$/i;
+function topic(subject: string) {
+  // A topic alone never suffices: participants and chronology are mandatory.
+  return normalizeSubject(subject).replace(
+    /^(?:respuesta|solicitud)\s+(?:de|del|a|al|sobre|para)\s+/i,
+    "",
+  );
+}
 export function matchEmails(mails: MatchMail[]): Map<string, Match> {
   const byKey = new Map(mails.map((m) => [m.key, m]));
   const byId = new Map(
@@ -8,32 +16,42 @@ export function matchEmails(mails: MatchMail[]): Map<string, Match> {
   );
   const bySubject = new Map<string, MatchMail[]>();
   for (const m of mails) {
-    const group = bySubject.get(m.normalizedSubject) ?? [];
+    const subject = topic(m.subject);
+    const group = bySubject.get(subject) ?? [];
     group.push(m);
-    bySubject.set(m.normalizedSubject, group);
+    bySubject.set(subject, group);
   }
-  const results = new Map<string, Match>();
-  const visiting = new Set<string>();
+  const results = new Map<string, Match>(),
+    visiting = new Set<string>();
+  const review = (reason: string, candidates: string[] = []): Match => ({
+    kind: "REVIEW",
+    rootKey: null,
+    reason,
+    candidates,
+  });
   function resolve(mail: MatchMail): Match {
     if (results.has(mail.key)) return results.get(mail.key)!;
-    if (visiting.has(mail.key))
-      return {
-        kind: "REVIEW",
-        rootKey: null,
-        reason: "Referencias cíclicas",
-        candidates: [],
-      };
+    if (visiting.has(mail.key)) return review("Referencias cíclicas");
     visiting.add(mail.key);
-    const review = (reason: string, candidates: string[] = []): Match => ({
-      kind: "REVIEW",
-      rootKey: null,
-      reason,
-      candidates,
+    const initial = (): Match => ({
+      kind: mail.staffName ? "STAFF_SENT" : "REQUEST",
+      rootKey: mail.key,
+      reason: mail.staffName
+        ? "Personal configurado: sin solicitud compatible; correo iniciado por personal"
+        : "Solicitud externa dirigida al buzón",
+      candidates: [],
     });
-    let match: Match;
+    const unlinked = (): Match => ({
+      kind: "RESPONSE",
+      rootKey: null,
+      reason: "Respuesta del personal sin asociación · clasificación manual",
+      candidates: [],
+    });
     const link = (target: MatchMail): Match => {
-      const parent = resolve(target);
-      const root = parent.rootKey ? byKey.get(parent.rootKey) : undefined;
+      if (target.key === mail.key)
+        return review("Un correo no puede asociarse consigo mismo");
+      const parent = resolve(target),
+        root = parent.rootKey ? byKey.get(parent.rootKey) : undefined;
       if (
         !root ||
         root.key === mail.key ||
@@ -43,7 +61,6 @@ export function matchEmails(mails: MatchMail[]): Map<string, Match> {
         return review("La relación no tiene una solicitud anterior válida", [
           target.key,
         ]);
-      const rootMatch = results.get(root.key);
       if (
         mail.staffName &&
         root.decision?.excludedResponseKeys?.includes(mail.key)
@@ -52,12 +69,11 @@ export function matchEmails(mails: MatchMail[]): Map<string, Match> {
           "Esta asociación se excluyó al marcar la solicitud como no respondida",
           [root.key],
         );
-      const kind =
-        mail.staffName && rootMatch?.kind === "REQUEST"
-          ? "RESPONSE"
-          : "FOLLOWUP";
       return {
-        kind,
+        kind:
+          mail.staffName && resolve(root).kind === "REQUEST"
+            ? "RESPONSE"
+            : "FOLLOWUP",
         rootKey: root.key,
         reason: "Cabeceras de conversación verificadas",
         candidates: [],
@@ -66,150 +82,154 @@ export function matchEmails(mails: MatchMail[]): Map<string, Match> {
         ],
       };
     };
-    if (
-      mail.approvedKind &&
-      (mail.approvedKind !== "REVIEW" || mail.approvedRootKey)
-    ) {
-      if (
-        mail.approvedKind === "REQUEST" ||
-        mail.approvedKind === "STAFF_SENT"
-      ) {
-        match = {
-          kind: mail.approvedKind,
-          rootKey: mail.key,
-          reason: "Clasificación histórica aprobada",
-          candidates: [],
-        };
-      } else {
-        const root = mail.approvedRootKey
-          ? byKey.get(mail.approvedRootKey)
-          : undefined;
-        match = root
-          ? link(root)
-          : review("La solicitud histórica asociada ya no está disponible");
-        if (match.kind !== "REVIEW")
-          match.reason = "Asociación histórica aprobada";
-      }
-    } else if (mail.decision) {
-      const d = mail.decision;
-      if (d.kind === "REQUEST" || d.kind === "STAFF_SENT") {
-        match =
-          (d.kind === "STAFF_SENT") !== Boolean(mail.staffName)
-            ? review("Clasificación incompatible con el remitente")
-            : {
-                kind: d.kind,
-                rootKey: mail.key,
-                reason: "Clasificación manual",
-                candidates: [],
-              };
-      } else {
-        const target = d.targetKey && byKey.get(d.targetKey);
-        match =
-          target &&
-          target.key !== mail.key &&
-          (resolve(target).kind === "REQUEST" ||
-            (d.kind === "FOLLOWUP" && resolve(target).kind === "STAFF_SENT"))
-            ? link(target)
-            : review(
-                "El correo asociado no está incorporado",
-                d.targetKey ? [d.targetKey] : [],
-              );
-        if (match.kind !== d.kind)
-          match = review(
-            "La relación manual no cumple las reglas de respuesta válida",
-          );
-        else match.reason = "Asociación manual verificada";
-      }
-    } else if (!mail.addressed) {
-      match = review("El buzón configurado no figura en Para ni CC");
-    } else {
-      const direct = mail.inReplyTo
+    const infer = (manualResponse = false): Match => {
+      if (!mail.addressed && !manualResponse)
+        return review("El buzón configurado no figura en Para ni CC");
+      const direct = [...new Set(mail.inReplyTo)]
         .map((id) => byId.get(id))
         .filter((m): m is MatchMail => !!m);
       const refs = [...mail.references]
         .reverse()
         .map((id) => byId.get(id))
         .filter((m): m is MatchMail => !!m);
-      if (direct.length > 1)
-        match = review(
-          "Varias referencias directas posibles",
-          direct.map((m) => m.key),
+      if (direct.length > 1) {
+        const links = direct.map(link),
+          roots = new Set(links.map((m) => m.rootKey));
+        if (roots.size === 1 && links.every((m) => m.kind !== "REVIEW"))
+          return links[0];
+        return manualResponse
+          ? unlinked()
+          : review(
+              "Varias referencias directas contradictorias",
+              direct.map((m) => m.key),
+            );
+      }
+      if (direct[0] || refs[0]) {
+        const found = link(direct[0] ?? refs[0]);
+        return manualResponse && found.kind === "REVIEW" ? unlinked() : found;
+      }
+      const isReply =
+        mail.inReplyTo.length > 0 ||
+        mail.references.length > 0 ||
+        /^(\s*(?:re|rv|fw|fwd|respuesta|reenviar)(?:\[\d+\])?\s*:)/i.test(
+          mail.subject,
         );
-      else if (direct[0] || refs[0]) match = link(direct[0] ?? refs[0]);
+      if (!isReply && !mail.staffName) return initial();
+      const participants = new Set(
+        [...mail.to, ...mail.cc].map((a) => a.address),
+      );
+      const subject = topic(mail.subject);
+      // All history is searched; specific unique roots have no arbitrary age cutoff.
+      const possible = (bySubject.get(subject) ?? []).filter(
+        (m) =>
+          m.key !== mail.key &&
+          !m.staffName &&
+          Date.parse(m.date) < Date.parse(mail.date) &&
+          (participants.has(m.from.address) ||
+            m.from.address === mail.from.address),
+      );
+      const roots = [
+        ...new Set(
+          possible
+            .map((m) => resolve(m).rootKey)
+            .filter((key): key is string => !!key),
+        ),
+      ]
+        .map((key) => byKey.get(key)!)
+        .filter((m) => resolve(m).kind === "REQUEST");
+      const eligible = roots.filter(
+        (m) =>
+          !generic.test(subject) ||
+          Date.parse(mail.date) - Date.parse(m.date) <= 86400000,
+      );
+      if (
+        eligible.length === 1 &&
+        subject &&
+        !/^(sin asunto|\(sin asunto\))$/i.test(subject)
+      ) {
+        const found = link(eligible[0]);
+        if (found.kind !== "REVIEW")
+          found.reason =
+            "Asociada automáticamente: asunto, participantes, buzón y cronología compatibles; una sola solicitud candidata en importación e histórico";
+        return manualResponse && found.kind === "REVIEW" ? unlinked() : found;
+      }
+      if (manualResponse) return unlinked();
+      if (mail.staffName && !roots.length) return initial();
+      return review(
+        roots.length > 1
+          ? "Varias solicitudes compatibles: selecciona el original"
+          : "No hay una solicitud anterior con suficiente contexto",
+        roots.map((m) => m.key).slice(0, 20),
+      );
+    };
+    let match: Match;
+    // Approvals retain their decisions; explicitly unlinked replies can reconcile later.
+    if (
+      mail.approvedKind &&
+      !(
+        mail.approvedKind === "RESPONSE" &&
+        !mail.approvedRootKey &&
+        !mail.decision?.targetKey
+      )
+    ) {
+      if (mail.approvedKind === "REQUEST" || mail.approvedKind === "STAFF_SENT")
+        match = {
+          ...initial(),
+          kind: mail.approvedKind,
+          reason: "Clasificación histórica aprobada",
+        };
+      else if (mail.approvedRootKey) {
+        const root = byKey.get(mail.approvedRootKey);
+        match = root
+          ? link(root)
+          : review("La solicitud histórica asociada ya no está disponible");
+      } else
+        match = review(
+          "Clasificación histórica pendiente de corrección manual",
+        );
+    } else if (mail.decision) {
+      const d = mail.decision;
+      if (d.kind === "REQUEST" || d.kind === "STAFF_SENT")
+        match =
+          (d.kind === "STAFF_SENT") !== Boolean(mail.staffName)
+            ? review("Clasificación incompatible con el remitente")
+            : { ...initial(), kind: d.kind, reason: "Clasificación manual" };
+      else if (d.kind === "RESPONSE" && !d.targetKey)
+        match = mail.staffName
+          ? infer(true)
+          : review(
+              "Solo el personal configurado puede emitir una respuesta del personal",
+            );
       else {
-        const isReply =
-          mail.inReplyTo.length > 0 ||
-          mail.references.length > 0 ||
-          /^(\s*(?:re|rv|fw|fwd|respuesta|reenviar)(?:\[\d+\])?\s*:)/i.test(
-            mail.subject,
+        const target = d.targetKey ? byKey.get(d.targetKey) : undefined;
+        if (target?.key === mail.key)
+          match = review("Un correo no puede asociarse consigo mismo");
+        else if (!target)
+          match = review("La solicitud original asociada no está disponible");
+        else if (
+          resolve(target).kind !== "REQUEST" &&
+          !(d.kind === "FOLLOWUP" && resolve(target).kind === "STAFF_SENT")
+        )
+          match = review(
+            "Selecciona una solicitud original; otra respuesta no es un original válido",
           );
-        if (!isReply && !mail.staffName)
-          match = {
-            kind: mail.staffName ? "STAFF_SENT" : "REQUEST",
-            rootKey: mail.key,
-            reason: "Correo inicial dirigido al buzón",
-            candidates: [],
-          };
         else {
-          const participants = new Set(
-            [...mail.to, ...mail.cc].map((a) => a.address),
-          );
-          const possible = (bySubject.get(mail.normalizedSubject) ?? []).filter(
-            (m) =>
-              m.key !== mail.key &&
-              !m.staffName &&
-              Date.parse(m.date) < Date.parse(mail.date) &&
-              Date.parse(mail.date) - Date.parse(m.date) < 7 * 86400000 &&
-              (participants.has(m.from.address) ||
-                m.from.address === mail.from.address),
-          );
-          const roots = [
-            ...new Set(
-              possible
-                .map((m) => resolve(m).rootKey)
-                .filter((key): key is string => !!key),
-            ),
-          ]
-            .map((key) => byKey.get(key)!)
-            .filter(
-              (m) =>
-                resolve(m).kind === "REQUEST" &&
-                (!generic.test(mail.normalizedSubject) ||
-                  Date.parse(mail.date) - Date.parse(m.date) <= 86400000),
-            );
-          if (
-            roots.length === 1 &&
-            mail.normalizedSubject &&
-            !/^(sin asunto|\(sin asunto\))$/i.test(mail.normalizedSubject)
-          ) {
-            match = link(roots[0]);
-            if (match.kind !== "REVIEW")
-              match.reason =
-                "Asociada automáticamente: asunto, participantes, buzón y cronología compatibles; una sola solicitud candidata";
-          } else if (!isReply && !possible.length) {
-            match = {
-              kind: "STAFF_SENT",
-              rootKey: mail.key,
-              reason: "Correo inicial del personal dirigido al buzón",
-              candidates: [],
-            };
-          } else {
+          match = link(target);
+          if (match.kind !== d.kind)
             match = review(
-              roots.length > 1
-                ? "Varias solicitudes compatibles: selecciona el original"
-                : "No hay una solicitud anterior con suficiente contexto",
-              possible.slice(0, 20).map((m) => m.key),
+              "La relación manual no cumple las reglas de remitente y cronología",
             );
-          }
+          else match.reason = "Asociación manual verificada";
         }
       }
-    }
+    } else match = infer(mail.approvedKind === "RESPONSE");
     visiting.delete(mail.key);
     results.set(mail.key, match);
     return match;
   }
   for (const mail of [...mails].sort(
-    (a, b) => Date.parse(a.date) - Date.parse(b.date),
+    (a, b) =>
+      Date.parse(a.date) - Date.parse(b.date) || a.key.localeCompare(b.key),
   ))
     resolve(mail);
   return results;

@@ -218,8 +218,8 @@ try {
     }),
   ]);
   await importFile(["test-results/part-one.zip", "test-results/part-two.zip"]);
-  await page.getByRole("link", { name: /^Respuestas realizadas/ }).click();
-  await expect(page.locator('.review-row input[type="checkbox"]')).toHaveCount(
+  await page.locator('a[href="?group=RESPONSE"]').click();
+  await expect(page.locator('.review-row > input[type="checkbox"]')).toHaveCount(
     1,
   );
   await page.locator(".review-row summary").first().click();
@@ -255,7 +255,7 @@ try {
   await importFile("test-results/pages.zip");
   const reviewUrl = page.url();
   await expect(
-    page.locator('.review-row input[type="checkbox"]:enabled'),
+    page.locator('.review-row > input[type="checkbox"]:enabled'),
   ).toHaveCount(30);
   await page
     .getByRole("button", { name: "Seleccionar esta página", exact: true })
@@ -270,14 +270,14 @@ try {
     page.getByText("0 seleccionados", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.locator('.review-row input[type="checkbox"]:checked'),
+    page.locator('.review-row > input[type="checkbox"]:checked'),
   ).toHaveCount(0);
   await expect(
-    page.locator('.review-row input[type="checkbox"]:enabled'),
+    page.locator('.review-row > input[type="checkbox"]:enabled'),
   ).toHaveCount(30);
   await page.getByRole("link", { name: "Siguiente", exact: true }).click();
   await expect(
-    page.locator('.review-row input[type="checkbox"]:enabled'),
+    page.locator('.review-row > input[type="checkbox"]:enabled'),
   ).toHaveCount(22);
   await page
     .getByRole("button", { name: "Seleccionar esta página", exact: true })
@@ -289,7 +289,7 @@ try {
     })
     .click();
   await expect(
-    page.locator('.review-row input[type="checkbox"]:enabled'),
+    page.locator('.review-row > input[type="checkbox"]:enabled'),
   ).toHaveCount(30);
   await page
     .getByRole("button", { name: "Seleccionar esta página", exact: true })
@@ -306,6 +306,87 @@ try {
       )
     ).rows,
   ).toHaveLength(52);
+  await zip("test-results/late-request.zip", [
+    eml({
+      id: "late-ui@test",
+      subject: "Prueba UI pendiente 16:55",
+      date: "Mon, 05 Oct 2026 16:55:00 -0400",
+    }),
+  ]);
+  await importFile("test-results/late-request.zip");
+  await approveAll();
+  await page.goto("http://127.0.0.1:3107/after-hours");
+  await expect(
+    page.getByRole("link", { name: "Prueba UI pendiente 16:55", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Editar", exact: true }).first().click();
+  await page.getByLabel("Ignorar (conservar fuera de métricas)").check();
+  await page
+    .getByLabel("Motivo de ignorado")
+    .fill("Reporte sintético para pruebas");
+  await page
+    .getByRole("button", { name: "Guardar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Cambio guardado");
+  await page.goto("http://127.0.0.1:3107/ignored");
+  await expect(
+    page.getByRole("link", { name: "Prueba UI pendiente 16:55", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Editar", exact: true }).first().click();
+  await page.getByLabel("Ignorar (conservar fuera de métricas)").uncheck();
+  await page
+    .getByLabel("Estado de la solicitud", { exact: true })
+    .selectOption("ANSWERED");
+  await page
+    .getByRole("button", { name: "Guardar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Cambio guardado");
+  await page
+    .getByText("Auditoría de correcciones (2)", { exact: true })
+    .click();
+  await page.screenshot({
+    path: "test-results/historical-edit.png",
+    fullPage: true,
+  });
+  await page.goto("http://127.0.0.1:3107/answered");
+  await expect(
+    page.getByText("Estado ajustado manualmente", { exact: true }),
+  ).toBeVisible();
+  await page.goto("http://127.0.0.1:3107/after-hours");
+  await expect(
+    page.getByRole("link", { name: "Prueba UI pendiente 16:55", exact: true }),
+  ).toHaveCount(0);
+  await zip("test-results/manual-response.zip", [
+    eml({
+      id: "manual-ui@test",
+      from: staff,
+      subject: "Re: Asunto sintético ausente",
+      date: "Tue, 06 Oct 2026 09:00:00 -0400",
+      headers: "In-Reply-To: <manual-original@test>\r\n",
+    }),
+  ]);
+  await importFile("test-results/manual-response.zip");
+  await page.locator(".review-row summary").first().click();
+  await page
+    .getByText("Corregir clasificación (opcional) / resolver asociación", {
+      exact: true,
+    })
+    .click();
+  await page
+    .getByLabel("Clasificación", { exact: true })
+    .selectOption("RESPONSE");
+  await page
+    .getByRole("button", { name: "Guardar decisión", exact: true })
+    .click();
+  await expect(page.getByText("Respuesta", { exact: true })).toBeVisible();
+  await approveAll();
+  await page.goto("http://127.0.0.1:3107/responses");
+  await expect(page.getByText("Sin asociación", { exact: true })).toBeVisible();
+  const unlinked = await pg.query(
+    'select "rootKey",kind from emails where "messageId"=$1',
+    ["manual-ui@test"],
+  );
+  expect(unlinked.rows[0]).toMatchObject({ rootKey: null, kind: "RESPONSE" });
   // Preview is non-destructive; explicit confirmation executes only against this isolated test DB.
   await page.goto("http://127.0.0.1:3107/settings");
   await expect(
@@ -402,7 +483,7 @@ try {
     .click();
   await expect(page).toHaveURL(/login/);
   console.log(
-    "E2E OK: autenticación, varios ZIP, dependencias, 82 solicitudes con aprobación parcial y rechazo, detalle no respondido, limpieza confirmada, staging, histórico, HTML, respaldo, CSRF y móvil.",
+    "E2E OK: autenticación, varios ZIP, dependencias, 82 solicitudes con aprobación parcial y rechazo, pendientes fuera de horario, ignorar/restaurar, edición con auditoría, respuesta sin asociación, limpieza confirmada, staging, histórico, HTML, respaldo, CSRF y móvil.",
   );
 } catch (error) {
   console.error(appLog.slice(-2500));

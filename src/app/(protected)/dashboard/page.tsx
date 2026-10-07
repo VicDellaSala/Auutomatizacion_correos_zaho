@@ -62,9 +62,16 @@ export default async function Dashboard({
           ],
           ["No respondidas", m.unanswered, "Pendientes de atención", Clock],
           [
+            "Pendientes fuera del horario",
+            m.afterHours,
+            "Recepción desde las 16:50",
+            Clock,
+          ],
+          ["Ignorados", m.ignored, "Excluidos de métricas", Mail],
+          [
             "Tasa de respuesta",
             `${m.rate.toFixed(1)}%`,
-            "Sobre solicitudes recibidas",
+            `Sobre ${m.evaluated} solicitudes evaluadas; excluye pendientes e ignorados`,
             Percent,
           ],
           [
@@ -99,7 +106,7 @@ export default async function Dashboard({
             {m.team.length ? (
               m.team.map((p) => (
                 <Link
-                  href={`/answered?${query}&person=${encodeURIComponent(p.name)}`}
+                  href={`/responses?${query}&person=${encodeURIComponent(p.name)}`}
                   className="bar-row"
                   key={p.name}
                 >
@@ -165,6 +172,9 @@ export default async function Dashboard({
       <p className="muted" style={{ fontSize: 11 }}>
         Las métricas siguen la fecha de recepción de la solicitud e incluyen sus
         respuestas aprobadas, aunque hayan llegado después del período filtrado.
+        Las respuestas sin asociación usan su fecha de envío y no generan
+        tiempos ni solicitudes respondidas. Pendientes fuera del horario e
+        ignorados no reducen la tasa.
       </p>
     </>
   );

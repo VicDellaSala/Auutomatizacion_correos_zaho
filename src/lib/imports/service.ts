@@ -4,6 +4,8 @@ import * as s from "@/lib/db/schema";
 import { matchEmails } from "@/lib/matching/matcher";
 import { refreshPendingStaff, ensureJulia } from "./staff";
 import { businessTimeSql } from "@/lib/metrics/business-time";
+import { attentionState } from "@/lib/metrics/attention";
+import { correctionSchema } from "@/lib/validation/email";
 import { emailSchema } from "@/lib/validation/email";
 import { normalizeSubject, sha256 } from "@/lib/email/normalize";
 import { contentParts } from "@/lib/email/content-cleaner";
@@ -130,8 +132,14 @@ export async function metadata(
   }
   return result;
 }
-export async function rebuild(db: Database) {
+export async function rebuild(db: Database, reevaluateKeys: string[] = []) {
   const mails = await metadata(db);
+  const reevaluate = new Set(reevaluateKeys);
+  for (const m of mails)
+    if (reevaluate.has(m.key)) {
+      delete m.approvedKind;
+      delete m.approvedRootKey;
+    }
   const matches = matchEmails(mails);
   const existing = await db
     .select({
@@ -155,9 +163,9 @@ export async function rebuild(db: Database) {
   await db.delete(s.conversations);
   await db.execute(sql`insert into conversations ("rootKey", "firstResponseKey", "firstResponseAt", "responseSeconds", "responseCount")
     select e.key, f.key, f.date, case when f.date is null then null else ${businessTimeSql(sql`e.date`, sql`f.date`)} end,
-    (select count(*)::int from emails r where r."rootKey"=e.key and r.kind='RESPONSE')
-    from emails e left join lateral (select r.key, r.date from emails r where r."rootKey"=e.key and r.kind='RESPONSE' order by r.date, r.key limit 1) f on true
-    where e.kind in ('REQUEST','STAFF_SENT')`);
+    (select count(*)::int from emails r where r."rootKey"=e.key and r.kind='RESPONSE' and not coalesce((r.decision->>'ignored')::boolean,false))
+    from emails e left join lateral (select r.key, r.date from emails r where r."rootKey"=e.key and r.kind='RESPONSE' and not coalesce((r.decision->>'ignored')::boolean,false) order by r.date, r.key limit 1) f on true
+    where e.kind in ('REQUEST','STAFF_SENT') and not coalesce((e.decision->>'ignored')::boolean,false)`);
   return matches;
 }
 export async function preview(db: Database, id: string) {
@@ -165,7 +173,12 @@ export async function preview(db: Database, id: string) {
     await lock(tx);
     await refreshPendingStaff(tx);
   });
-  const matches = matchEmails(await metadata(db, id));
+  const mails = await metadata(db, id);
+  const mailByKey = new Map(mails.map((m) => [m.key, m]));
+  const matches = matchEmails(mails);
+  const ignoredKeys = mails
+    .filter((m) => m.decision?.ignored)
+    .map((m) => m.key);
   const current = await db.select().from(s.conversations);
   const currentByKey = new Map(current.map((c) => [c.rootKey, c]));
   const pending = await db
@@ -182,27 +195,43 @@ export async function preview(db: Database, id: string) {
     STAFF_SENT: 0,
     FOLLOWUP: 0,
     REVIEW: 0,
+    IGNORED: 0,
   };
   const changes = new Set<string>();
   const existingRoots = new Set(current.map((c) => c.rootKey));
   const newRoots = new Set<string>();
-  const answeredRoots = new Set(
-    [...matches.values()]
-      .filter((m) => m.kind === "RESPONSE")
-      .map((m) => m.rootKey),
-  );
+  const answeredRoots = new Set<string>();
+  for (const [key, m] of matches)
+    if (m.kind === "RESPONSE" && !ignoredKeys.includes(key) && m.rootKey)
+      answeredRoots.add(m.rootKey);
+  for (const m of mails)
+    if (m.decision?.requestStatus === "ANSWERED") answeredRoots.add(m.key);
+  const afterHoursRoots = new Set<string>();
   let automatic = 0;
   for (const row of pending.filter((r) => r.state === "PENDING")) {
     const match = matches.get(row.key)!;
+    if (ignoredKeys.includes(row.key)) {
+      counts.IGNORED++;
+      continue;
+    }
     counts[match.kind]++;
     if (match.kind === "REQUEST" && !existingRoots.has(row.key))
       newRoots.add(row.key);
+    if (
+      match.kind === "REQUEST" &&
+      attentionState(
+        { ...mailByKey.get(row.key)!, kind: "REQUEST" },
+        answeredRoots.has(row.key),
+      ) === "AFTER_HOURS"
+    )
+      afterHoursRoots.add(row.key);
     if (match.kind !== "REVIEW" && !match.reason.includes("manual"))
       automatic++;
     if (
       match.kind === "RESPONSE" &&
       match.rootKey &&
       currentByKey.has(match.rootKey) &&
+      mailByKey.get(match.rootKey)?.decision?.requestStatus !== "ANSWERED" &&
       !currentByKey.get(match.rootKey)!.firstResponseKey
     )
       changes.add(match.rootKey!);
@@ -213,7 +242,12 @@ export async function preview(db: Database, id: string) {
     changes: [...changes],
     automatic,
     answered: [...newRoots].filter((key) => answeredRoots.has(key)).length,
-    unanswered: [...newRoots].filter((key) => !answeredRoots.has(key)).length,
+    unanswered: [...newRoots].filter(
+      (key) => !answeredRoots.has(key) && !afterHoursRoots.has(key),
+    ).length,
+    afterHours: [...newRoots].filter((key) => afterHoursRoots.has(key)).length,
+    afterHoursRoots: [...afterHoursRoots],
+    ignoredKeys,
     answeredRoots: [...answeredRoots].filter((key): key is string => !!key),
   };
 }
@@ -291,7 +325,11 @@ export async function approve(
       }
     }
     const issues = selected
-      .filter((r) => proposed.get(r.key)?.kind === "REVIEW")
+      .filter(
+        (r) =>
+          proposed.get(r.key)?.kind === "REVIEW" &&
+          !mailByKey.get(r.key)?.decision?.ignored,
+      )
       .map((r) => ({
         id: r.id,
         subject: mailByKey.get(r.key)?.subject ?? r.key,
@@ -351,8 +389,19 @@ export async function approve(
         .values(batch.map((r) => ({ importId: id, emailKey: r.key })))
         .onConflictDoNothing();
     }
-    const matches = await rebuild(tx);
-    if (selected.some((r) => matches.get(r.key)?.kind === "REVIEW"))
+    const matches = await rebuild(
+      tx,
+      selected
+        .filter((r) => !mailByKey.get(r.key)?.approvedKind)
+        .map((r) => r.key),
+    );
+    if (
+      selected.some(
+        (r) =>
+          matches.get(r.key)?.kind === "REVIEW" &&
+          !mailByKey.get(r.key)?.decision?.ignored,
+      )
+    )
       throw new DomainError(
         "Una relación cambió durante la incorporación; revisa los correos indicados.",
         selected
@@ -391,6 +440,49 @@ export async function reject(db: Database, id: string, ids: string[]) {
     await refreshStatus(tx, id);
   });
 }
+export async function prepareDecision(
+  db: Database,
+  mails: MatchMail[],
+  key: string,
+  input: Decision,
+): Promise<Decision> {
+  const mail = mails.find((m) => m.key === key);
+  if (!mail) throw new DomainError("Correo no encontrado");
+  const decision: Decision = correctionSchema.parse(input);
+  if (decision.kind !== "REQUEST") delete decision.requestStatus;
+  if (!["RESPONSE", "FOLLOWUP"].includes(decision.kind))
+    delete decision.targetKey;
+  if (decision.responsibleId) {
+    const [person] = await db
+      .select()
+      .from(s.agents)
+      .where(eq(s.agents.id, decision.responsibleId));
+    if (!person)
+      throw new DomainError("El responsable seleccionado ya no existe");
+    decision.responsibleName = person.name;
+  }
+  const before = matchEmails(mails);
+  if (
+    decision.kind === "REQUEST" &&
+    ["UNANSWERED", "AFTER_HOURS"].includes(decision.requestStatus ?? "")
+  ) {
+    decision.excludedResponseKeys = [
+      ...new Set([
+        ...(mail.decision?.excludedResponseKeys ?? []),
+        ...[...before]
+          .filter(([, m]) => m.kind === "RESPONSE" && m.rootKey === key)
+          .map(([k]) => k),
+      ]),
+    ];
+  }
+  mail.decision = decision;
+  delete mail.approvedKind;
+  delete mail.approvedRootKey;
+  const verified = matchEmails(mails).get(key)!;
+  if (verified.kind === "REVIEW" && !decision.ignored)
+    throw new DomainError(verified.reason);
+  return decision;
+}
 export async function decide(
   db: Database,
   id: string,
@@ -427,27 +519,7 @@ export async function decide(
       throw new DomainError(
         "Este correo ya existe en el histórico; aprueba su procedencia sin cambiar la decisión histórica",
       );
-    const before = matchEmails(mails);
-    // A manual unanswered decision excludes only currently associated responses, never future messages.
-    decision = {
-      ...decision,
-      excludedResponseKeys:
-        decision.kind === "REQUEST" && decision.requestStatus === "UNANSWERED"
-          ? [
-              ...new Set([
-                ...(mail.decision?.excludedResponseKeys ?? []),
-                ...[...before]
-                  .filter(
-                    ([, m]) => m.kind === "RESPONSE" && m.rootKey === row.key,
-                  )
-                  .map(([key]) => key),
-              ]),
-            ]
-          : undefined,
-    };
-    mail.decision = decision;
-    const verified = matchEmails(mails).get(row.key)!;
-    if (verified.kind === "REVIEW") throw new DomainError(verified.reason);
+    decision = await prepareDecision(tx, mails, mail.key, decision);
     const result = await tx
       .update(s.stagedEmails)
       .set({ decision })

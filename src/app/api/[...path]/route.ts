@@ -18,7 +18,8 @@ import {
   reject,
   revert,
 } from "@/lib/imports/service";
-import { emailSchema, decisionSchema } from "@/lib/validation/email";
+import { emailSchema, correctionSchema } from "@/lib/validation/email";
+import { editApproved, correctionVersion } from "@/lib/emails/service";
 import {
   errorResponse,
   readJson,
@@ -71,7 +72,9 @@ async function handle(request: Request, ctx: Context) {
     if (path[0] === "lookup" && method === "GET") {
       const query = new URL(request.url).searchParams;
       const term = (query.get("q") ?? "").slice(0, 200).toLowerCase();
-      const importId = z.uuid().parse(query.get("importId"));
+      const importId = query.get("importId")
+        ? z.uuid().parse(query.get("importId"))
+        : undefined;
       const mails = await metadata(db(), importId);
       const current = mails.find((m) => m.key === query.get("exclude"));
       if (!current)
@@ -89,9 +92,12 @@ async function handle(request: Request, ctx: Context) {
         .filter(
           (m) =>
             m.key !== current.key &&
-            !m.staffName &&
-            matches.get(m.key)?.kind === "REQUEST" &&
-            Date.parse(m.date) < Date.parse(current.date) &&
+            (query.get("responses") === "true"
+              ? Boolean(m.staffName) &&
+                Date.parse(m.date) > Date.parse(current.date)
+              : !m.staffName &&
+                matches.get(m.key)?.kind === "REQUEST" &&
+                Date.parse(m.date) < Date.parse(current.date)) &&
             `${m.subject} ${m.from.address}`.toLowerCase().includes(term),
         )
         .sort(
@@ -106,6 +112,31 @@ async function handle(request: Request, ctx: Context) {
           from: m.from.address,
         }));
       return Response.json({ rows });
+    }
+    if (path[0] === "emails") {
+      const key = z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .parse(path[1]);
+      if (method === "GET") {
+        const [mail] = await db()
+          .select()
+          .from(s.emails)
+          .where(eq(s.emails.key, key));
+        if (!mail) throw new DomainError("Correo aprobado no encontrado");
+        return Response.json({ mail, version: correctionVersion(mail) });
+      }
+      if (method === "PATCH") {
+        const body = z
+          .object({
+            decision: correctionSchema,
+            version: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .parse(await readJson(request));
+        return Response.json(
+          await editApproved(db(), key, body.decision, body.version, user),
+        );
+      }
     }
     if (path[0] === "cleanup" && method === "POST") {
       const body = z
@@ -395,7 +426,7 @@ async function handle(request: Request, ctx: Context) {
               db(),
               id,
               z.uuid().parse(body.rowId),
-              decisionSchema.parse(body.decision),
+              correctionSchema.parse(body.decision),
             );
             break;
           case "discard":
