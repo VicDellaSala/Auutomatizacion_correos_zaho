@@ -13,12 +13,14 @@ export const attentionLabel: Record<AttentionState, string> = {
 export function attentionState(
   mail: { kind: Kind; date: Date | string; decision?: Decision | null },
   firstResponse: unknown,
+  recipientCredit = false,
 ): AttentionState {
   if (mail.decision?.ignored) return "IGNORED";
   if (mail.kind !== "REQUEST") return mail.kind;
   if (firstResponse || mail.decision?.requestStatus === "ANSWERED")
     return "ANSWERED";
   if (mail.decision?.requestStatus === "UNANSWERED") return "UNANSWERED";
+  if (recipientCredit) return "ANSWERED";
   const hour = new Intl.DateTimeFormat("en-GB", {
     timeZone: "America/Caracas",
     hour: "2-digit",
@@ -35,6 +37,7 @@ export const attentionSql = sql`case
   when e.kind <> 'REQUEST' then e.kind
   when c."firstResponseKey" is not null or e.decision->>'requestStatus'='ANSWERED' then 'ANSWERED'
   when e.decision->>'requestStatus'='UNANSWERED' then 'UNANSWERED'
+  when exists(select 1 from recipient_followups rf where rf."rootKey"=e.key) then 'ANSWERED'
   when e.decision->>'requestStatus'='AFTER_HOURS' or (e.date at time zone 'America/Caracas')::time >= time '16:50' then 'AFTER_HOURS'
   else 'UNANSWERED' end`;
 export const activeSql = sql`not coalesce((e.decision->>'ignored')::boolean,false)`;

@@ -32,7 +32,7 @@ No se adjuntó un HTML de referencia; el reporte se implementó siguiendo las se
 
 | Verificación | Resultado |
 |---|---|
-| `npm test` | 88 pruebas aprobadas, 4 archivos |
+| `npm test` | 95 pruebas aprobadas, 4 archivos |
 | `npm run lint` | Sin errores ni advertencias |
 | `npm run typecheck` | Correcto |
 | `npm run build` | Build de producción correcto |
@@ -78,3 +78,7 @@ No hubo migración de esquema, reset ni eliminación de datos de producción. Lo
 Se verifica la gestión manual con responsable y Sin asignar, unificación por ID y nombre oficial, sustitución por correo real del mismo responsable, respuestas adicionales y crédito manual explícitamente adicional, fechas de envío/acreditación separadas de recepción, fecha recuperada desde auditoría y referencia de incorporación para registros antiguos sin fecha. La suite cubre exclusión/restauración de ignorados, coherencia de totales y porcentaje 51/105 = 48,6 %, así como respaldo de fecha y auditoría. No se crean mensajes de respuesta ficticios ni se migran o borran datos de producción.
 
 Se repitieron las 88 pruebas, lint, typecheck y build satisfactoriamente. El E2E de Chrome pasó sobre ese build y una base temporal: acredita una gestión sin responsable, la asigna al agente y comprueba la tabla de gestiones y su igualdad con el KPI de enviados. También mantiene las verificaciones del flujo completo y móvil. La prueba grande de 500 MB no se repitió en esta ronda.
+
+## Seguimientos acreditados por destinatario
+
+Se agregaron siete casos de integración: prioridad y orden de Para/CC, direcciones repetidas o con mayúsculas, exclusión de agentes inactivos, separación de solicitudes nuevas y seguimientos, conversaciones iniciadas por personal, fechas de actividad, ignorar/restaurar, correcciones explícitas y sustitución de créditos manuales sin duplicación. Las pruebas verifican que los tiempos no se atribuyan a destinatarios y que no se cambie el correo original. El E2E cubre la acreditación visible, el agente asignado, el detalle de conversación, el total del dashboard y el reporte HTML.

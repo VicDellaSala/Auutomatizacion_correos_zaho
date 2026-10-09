@@ -20,6 +20,25 @@ export const activityCte = sql`with identities as (
   from emails r join identities i on i.key=r.key left join emails root on root.key=r."rootKey"
   where r.kind='RESPONSE' and not coalesce((r.decision->>'ignored')::boolean,false)
     and (root.key is null or (root.kind='REQUEST' and not coalesce((root.decision->>'ignored')::boolean,false)))
+), recipient_followups as (
+  select f.key,f.date,f."rootKey",p.id::text as "personId",p.name,
+    p.via
+  from emails f join emails root on root.key=f."rootKey"
+  join lateral (
+    select a.id,a.name,
+      case when dest.n <= jsonb_array_length(coalesce(f.data->'to','[]'::jsonb)) then 'Para' else 'CC' end as via
+    from jsonb_array_elements(coalesce(f.data->'to','[]'::jsonb) || coalesce(f.data->'cc','[]'::jsonb)) with ordinality as dest(address,n)
+    join agents a on a.active and lower(a.email)=lower(dest.address->>'address')
+    order by dest.n,a.id limit 1
+  ) p on true
+  where f.kind='FOLLOWUP' and root.kind in ('REQUEST','STAFF_SENT') and f.date>root.date
+    and not coalesce((f.decision->>'ignored')::boolean,false)
+    and not coalesce((root.decision->>'ignored')::boolean,false)
+    and not (coalesce(root.decision->'excludedResponseKeys','[]'::jsonb) ? f.key)
+), credited_responses as (
+  select key,date,"rootKey","personId",name,"requestDate",false as recipient,null::text as via from real_responses
+  union all
+  select key,date,"rootKey","personId",name,null::timestamptz,true,via from recipient_followups
 ), manual_candidates as (
   select e.key,e.key as "rootKey",i."personId",i.name,
     coalesce((e.decision->>'manualAnsweredAt')::timestamptz,
@@ -37,12 +56,12 @@ export const activityCte = sql`with identities as (
   from emails e join identities i on i.key=e.key
   where e.kind='REQUEST' and e.decision->>'requestStatus'='ANSWERED' and not coalesce((e.decision->>'ignored')::boolean,false)
 ), activity as (
-  select key,date,"rootKey","personId",name,'RESPONSE'::text as type,false as manual,"requestDate",false as estimated from real_responses
+  select key,date,"rootKey","personId",name,'RESPONSE'::text as type,false as manual,"requestDate",false as estimated,recipient,via from credited_responses
   union all
-  select m.key,m.date,m."rootKey",m."personId",m.name,'RESPONSE',true,null::timestamptz,m.estimated from manual_candidates m
-  where m.additional or not exists(select 1 from real_responses r where r."rootKey"=m.key and (r."personId"=m."personId" or m."personId"='unassigned'))
+  select m.key,m.date,m."rootKey",m."personId",m.name,'RESPONSE',true,null::timestamptz,m.estimated,false,null::text from manual_candidates m
+  where m.additional or not exists(select 1 from credited_responses r where r."rootKey"=m.key and (r."personId"=m."personId" or m."personId"='unassigned'))
   union all
-  select e.key,e.date,null::text,i."personId",i.name,'STAFF_SENT',false,null::timestamptz,false
+  select e.key,e.date,null::text,i."personId",i.name,'STAFF_SENT',false,null::timestamptz,false,false,null::text
   from emails e join identities i on i.key=e.key where e.kind='STAFF_SENT' and not coalesce((e.decision->>'ignored')::boolean,false)
 )`;
 

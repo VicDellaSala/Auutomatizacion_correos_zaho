@@ -386,7 +386,11 @@ try {
     totalTable.getByRole("row").filter({ hasText: "Sin asignar" }),
   ).toHaveCount(0);
   await expect(
-    totalTable.getByRole("row").filter({ hasText: "Agente" }).locator("td").nth(1),
+    totalTable
+      .getByRole("row")
+      .filter({ hasText: "Agente" })
+      .locator("td")
+      .nth(1),
   ).toHaveText("3");
   await page.screenshot({
     path: "test-results/activity-dashboard.png",
@@ -431,6 +435,47 @@ try {
     ["manual-ui@test"],
   );
   expect(unlinked.rows[0]).toMatchObject({ rootKey: null, kind: "RESPONSE" });
+  await zip("test-results/recipient-followup.zip", [
+    eml({
+      id: "recipient-followup@test",
+      subject: "Re: Cambio de canal",
+      date: "Tue, 06 Oct 2026 10:00:00 -0400",
+      headers: `Cc: ${staff}\r\nIn-Reply-To: <request@test>\r\n`,
+    }),
+  ]);
+  await importFile("test-results/recipient-followup.zip");
+  await approveAll();
+  await page.goto("http://127.0.0.1:3107/responses");
+  await expect(
+    page.getByText("Acreditada por destinatario en CC", { exact: true }),
+  ).toBeVisible();
+  const recipientRow = page
+    .getByRole("row")
+    .filter({ hasText: "Acreditada por destinatario en CC" });
+  await expect(recipientRow.locator("td").nth(3)).toHaveText("Agente");
+  await expect(recipientRow.locator("td").nth(4)).toHaveText("—");
+  await recipientRow
+    .getByRole("link", { name: "Abrir correo completo →" })
+    .click();
+  await expect(
+    page.getByText("Respuesta acreditada a Agente:", { exact: false }),
+  ).toBeVisible();
+  await page.goto("http://127.0.0.1:3107/dashboard");
+  await expect(
+    totalTable
+      .getByRole("row")
+      .filter({ hasText: "Agente" })
+      .locator("td")
+      .nth(1),
+  ).toHaveText("5");
+  const creditedReport = await page.evaluate(async () => {
+    const response = await fetch("/api/reports");
+    return { ok: response.ok, text: await response.text() };
+  });
+  expect(creditedReport.ok).toBe(true);
+  expect(creditedReport.text).toContain(
+    "1 respuestas acreditadas por destinatario",
+  );
   // Preview is non-destructive; explicit confirmation executes only against this isolated test DB.
   await page.goto("http://127.0.0.1:3107/settings");
   await expect(

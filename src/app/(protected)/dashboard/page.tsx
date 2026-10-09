@@ -112,7 +112,8 @@ export default async function Dashboard({
           <div className="panel-head">
             <h2>Respuestas por persona</h2>
             <span className="muted" style={{ fontSize: 11 }}>
-              Incluye {m.manualResponses} acreditadas manualmente
+              Incluye {m.manualResponses} manuales y {m.recipientResponses} por
+              destinatario
             </span>
           </div>
           <div className="panel-body">
@@ -224,10 +225,12 @@ export default async function Dashboard({
         Las solicitudes y su atención se filtran por recepción. La actividad del
         personal usa la fecha del correo o la fecha de acreditación manual.
         Correos enviados incluye gestiones manuales, aunque no exista un email.
-        Un correo del mismo responsable sustituye su acreditación manual salvo
-        que se indique que son gestiones distintas. Los tiempos usan solo
-        correos reales asociados. Pendientes fuera del horario e ignorados no
-        reducen la tasa.
+        Los seguimientos se acreditan al primer agente activo en Para; si no hay
+        ninguno, al primero en CC. Una sola acreditación por correo, sin generar
+        tiempos de respuesta a partir de esta regla. Un correo acreditado al
+        mismo responsable sustituye su acreditación manual salvo que se indique
+        que son gestiones distintas. Los tiempos usan solo correos reales
+        asociados. Pendientes fuera del horario e ignorados no reducen la tasa.
       </p>
     </>
   );

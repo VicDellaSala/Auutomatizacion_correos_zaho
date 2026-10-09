@@ -105,8 +105,8 @@ export function DecisionEditor({
             />
             La atención manual es adicional a las respuestas por correo
             <small>
-              Por defecto, un correo del mismo responsable sustituye la
-              acreditación manual. Marca esto solo si fueron gestiones
+              Por defecto, un correo acreditado al mismo responsable sustituye
+              la acreditación manual. Marca esto solo si fueron gestiones
               distintas. Sin responsable se mostrará «Sin asignar».
             </small>
           </label>

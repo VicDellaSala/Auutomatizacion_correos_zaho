@@ -31,6 +31,13 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
                 {r.manualCredit && (
                   <div className="preview">Acreditada manualmente</div>
                 )}
+                {r.recipientCredit && (
+                  <div className="preview">
+                    {r.recipientVia
+                      ? `Acreditada por destinatario en ${r.recipientVia}`
+                      : "Incluye acreditación por destinatario"}
+                  </div>
+                )}
                 {r.dateEstimated && (
                   <div className="preview">
                     Fecha de incorporación: ajuste antiguo sin fecha guardada
@@ -80,7 +87,9 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
                 <span
                   className={`badge ${r.kind === "REVIEW" ? "red" : r.firstResponseKey ? "green" : r.kind === "STAFF_SENT" ? "" : "amber"}`}
                 >
-                  {attentionLabel[r.attention]}
+                  {r.recipientVia
+                    ? "Respuesta acreditada"
+                    : attentionLabel[r.attention]}
                 </span>
                 {r.decision?.requestStatus === "ANSWERED" &&
                   !r.firstResponseKey && (
@@ -105,6 +114,7 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
               <td style={{ whiteSpace: "nowrap" }}>
                 {duration(
                   r.attention === "IGNORED" ||
+                    (r.recipientCredit && !r.firstResponseKey) ||
                     (r.decision?.requestStatus === "ANSWERED" &&
                       !r.firstResponseKey)
                     ? null

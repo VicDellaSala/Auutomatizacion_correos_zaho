@@ -195,6 +195,12 @@ La limpieza elimina las importaciones y sus procedencias/staging, borra únicame
 
 ## Reporte HTML autónomo
 
+### Acreditación de seguimientos por destinatario
+
+Los seguimientos aprobados se acreditan como respuesta al primer agente activo que figure en Para; si no hay ninguno, al primero en CC, respetando el orden de las direcciones. Un correo cuenta una sola vez aunque incluya varios agentes. Se aplica también al histórico, sin reimportarlo ni cambiar el remitente o la clasificación original. Los listados, el detalle y el reporte identifican estas acreditaciones.
+
+La gestión cuenta en la fecha del seguimiento y no genera un tiempo de respuesta atribuido al destinatario. Cuando pertenece a una solicitud, esta queda respondida por la regla, salvo una corrección explícita a No respondida. No se crean solicitudes para conversaciones iniciadas por personal. Se excluyen mensajes ignorados, originales ignorados y asociaciones excluidas manualmente. Un crédito del mismo responsable sustituye una acreditación manual coincidente, salvo que se haya marcado como adicional. Los cambios de agentes activos pueden cambiar el resultado de esta regla.
+
 El botón del Dashboard usa los filtros actuales. Genera un único archivo `.html` con CSS incluido, sin CDN, fuentes remotas, scripts externos ni llamadas de red. Los detalles se despliegan con `<details>`, por lo que no requiere JavaScript. Incluye resumen, respuestas por persona, solicitudes respondidas, correos iniciados y no respondidos. Todo texto del correo se escapa como HTML. Puede abrirse offline en PC o móvil; la aplicación elegida para abrir archivos en cada teléfono debe admitir HTML.
 
 ## Respaldo y restauración

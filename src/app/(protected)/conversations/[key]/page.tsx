@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { asc, eq, or, inArray, and } from "drizzle-orm";
 import { businessSeconds } from "@/lib/metrics/business-time";
 import { attentionLabel, attentionState } from "@/lib/metrics/attention";
+import { recipientCredits } from "@/lib/metrics/query";
 import { db } from "@/lib/db";
 import {
   emails,
@@ -35,6 +36,7 @@ export default async function Conversation({
     .from(conversations)
     .where(eq(conversations.rootKey, root));
   const original = thread.find((m) => m.key === root) ?? e;
+  const credits = await recipientCredits(db(), root);
   const sources = await db()
     .select({
       key: emailImports.emailKey,
@@ -84,6 +86,7 @@ export default async function Conversation({
               attentionState(
                 e.decision?.ignored ? e : original,
                 c?.firstResponseKey,
+                credits.length > 0,
               )
             ]
           }
@@ -100,8 +103,8 @@ export default async function Conversation({
             ? businessSeconds(original.date, c.firstResponseAt)
             : null,
         )}{" "}
-        · 08:00–17:00 America/Caracas · {c?.responseCount ?? 0} respuestas
-        válidas
+        · 08:00–17:00 America/Caracas · {c?.responseCount ?? 0} respuestas por
+        correo del personal · {credits.length} acreditadas por destinatario
       </div>
       <div className="timeline">
         {thread.map((mail) => (
@@ -142,6 +145,15 @@ export default async function Conversation({
                   Motivo: {mail.decision.ignoredReason || "Sin motivo indicado"}
                 </p>
               )}
+              {credits
+                .filter((credit) => credit.key === mail.key)
+                .map((credit) => (
+                  <p key={credit.key}>
+                    Respuesta acreditada a {credit.name}: primer agente en{" "}
+                    {credit.via}. No indica que el destinatario haya enviado
+                    este correo.
+                  </p>
+                ))}
               {mail.kind === "RESPONSE" &&
                 mail.rootKey &&
                 !mail.decision?.ignored &&
