@@ -40,7 +40,14 @@ export default async function Dashboard({
           Importar correos
         </Link>
       </PageHeading>
-      <Filters />
+      <Filters dateLabel="Solicitudes: recepción · Actividad: fecha de gestión · Caracas" />
+      {m.manualDateEstimated > 0 && (
+        <p className="notice">
+          {m.manualDateEstimated} acreditaciones antiguas no guardaron la fecha
+          del ajuste. Se usa su fecha de incorporación como referencia; las
+          nuevas guardan la fecha exacta de acreditación.
+        </p>
+      )}
       {m.pending > 0 && (
         <div className="notice">
           Hay {m.pending} correos pendientes de revisión. Todavía no afectan
@@ -53,13 +60,14 @@ export default async function Dashboard({
       <section className="metrics">
         {[
           ["Solicitudes recibidas", m.received, "Total del período", Mail],
-          ["Respondidas", m.answered, "Con respuesta válida", CheckCheck],
+          ["Respondidas", m.answered, "Solicitudes con atención", CheckCheck],
           [
             "Respuestas realizadas",
             m.responses,
-            "Todos los mensajes de respuesta",
+            "Todos los mensajes/gestiones de respuesta",
             Mail,
           ],
+          ["Correos enviados", m.sent, "Respuestas + correos iniciados", Mail],
           ["No respondidas", m.unanswered, "Pendientes de atención", Clock],
           [
             "Pendientes fuera del horario",
@@ -67,7 +75,12 @@ export default async function Dashboard({
             "Recepción desde las 16:50",
             Clock,
           ],
-          ["Ignorados", m.ignored, "Excluidos de métricas", Mail],
+          [
+            "Ignorados",
+            m.ignored,
+            `Excluidos de métricas · ${m.ignoredPercent.toFixed(1).replace(".", ",")} % de solicitudes recibidas`,
+            Mail,
+          ],
           [
             "Tasa de respuesta",
             `${m.rate.toFixed(1)}%`,
@@ -76,7 +89,7 @@ export default async function Dashboard({
           ],
           [
             "Tiempo promedio",
-            m.answered ? duration(m.average) : "—",
+            m.timedRequests ? duration(m.average) : "—",
             "Primera respuesta · 08:00–17:00",
             Timer,
           ],
@@ -99,16 +112,16 @@ export default async function Dashboard({
           <div className="panel-head">
             <h2>Respuestas por persona</h2>
             <span className="muted" style={{ fontSize: 11 }}>
-              Respuestas a solicitudes
+              Incluye {m.manualResponses} acreditadas manualmente
             </span>
           </div>
           <div className="panel-body">
             {m.team.length ? (
               m.team.map((p) => (
                 <Link
-                  href={`/responses?${query}&person=${encodeURIComponent(p.name)}`}
+                  href={`/responses?${query}&personId=${encodeURIComponent(p.personId)}`}
                   className="bar-row"
-                  key={p.name}
+                  key={p.personId}
                 >
                   <span className="name">{p.name}</span>
                   <span className="bar-track">
@@ -144,8 +157,8 @@ export default async function Dashboard({
             {m.initiated.length ? (
               m.initiated.map((p) => (
                 <Link
-                  href={`/staff-sent?${query}&person=${encodeURIComponent(p.name)}`}
-                  key={p.name}
+                  href={`/staff-sent?${query}&personId=${encodeURIComponent(p.personId)}`}
+                  key={p.personId}
                   className="bar-row"
                 >
                   <span style={{ flex: 1 }}>{p.name}</span>
@@ -162,6 +175,44 @@ export default async function Dashboard({
       </div>
       <section className="panel">
         <div className="panel-head">
+          <h2>Gestiones realizadas totales</h2>
+          <span className="muted">Actividad del personal</span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Persona</th>
+                <th>Respuestas realizadas</th>
+                <th>Correos iniciados</th>
+                <th>Total gestiones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {m.activities.map((p) => (
+                <tr key={p.personId}>
+                  <td>{p.name}</td>
+                  <td>{p.responses}</td>
+                  <td>{p.initiated}</td>
+                  <td>
+                    <b>{p.total}</b>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th>TOTAL GENERAL</th>
+                <th>{m.responses}</th>
+                <th>{m.initiatedTotal}</th>
+                <th>{m.sent}</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head">
           <h2>Solicitudes recientes</h2>
           <Link href={`/conversations?${query}`} className="section-link">
             Ver todas las solicitudes →
@@ -170,11 +221,13 @@ export default async function Dashboard({
         <MailTable rows={rows} />
       </section>
       <p className="muted" style={{ fontSize: 11 }}>
-        Las métricas siguen la fecha de recepción de la solicitud e incluyen sus
-        respuestas aprobadas, aunque hayan llegado después del período filtrado.
-        Las respuestas sin asociación usan su fecha de envío y no generan
-        tiempos ni solicitudes respondidas. Pendientes fuera del horario e
-        ignorados no reducen la tasa.
+        Las solicitudes y su atención se filtran por recepción. La actividad del
+        personal usa la fecha del correo o la fecha de acreditación manual.
+        Correos enviados incluye gestiones manuales, aunque no exista un email.
+        Un correo del mismo responsable sustituye su acreditación manual salvo
+        que se indique que son gestiones distintas. Los tiempos usan solo
+        correos reales asociados. Pendientes fuera del horario e ignorados no
+        reducen la tasa.
       </p>
     </>
   );

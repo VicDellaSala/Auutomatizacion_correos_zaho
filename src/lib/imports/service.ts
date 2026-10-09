@@ -449,6 +449,16 @@ export async function prepareDecision(
   const mail = mails.find((m) => m.key === key);
   if (!mail) throw new DomainError("Correo no encontrado");
   const decision: Decision = correctionSchema.parse(input);
+  if (decision.kind === "REQUEST" && decision.requestStatus === "ANSWERED") {
+    if (
+      mail.decision?.kind === "REQUEST" &&
+      mail.decision.requestStatus === "ANSWERED"
+    ) {
+      if (mail.decision.manualAnsweredAt)
+        decision.manualAnsweredAt = mail.decision.manualAnsweredAt;
+      // Old records retain their original audit-derived date rather than today's edit date.
+    } else decision.manualAnsweredAt = new Date().toISOString();
+  } else delete decision.manualResponseAdditional;
   if (decision.kind !== "REQUEST") delete decision.requestStatus;
   if (!["RESPONSE", "FOLLOWUP"].includes(decision.kind))
     delete decision.targetKey;

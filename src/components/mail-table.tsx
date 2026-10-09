@@ -11,7 +11,11 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
       <table>
         <thead>
           <tr>
-            <th>Recibida</th>
+            <th>
+              {rows.some((r) => r.activityDate)
+                ? "Fecha de gestión"
+                : "Recibida"}
+            </th>
             <th>Remitente / asunto</th>
             {sent && <th>Para / CC / adjuntos</th>}
             <th>Estado</th>
@@ -23,7 +27,15 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
           {rows.map((r) => (
             <tr key={r.key}>
               <td style={{ whiteSpace: "nowrap" }}>
-                {dateTime(r.date)}
+                {dateTime(r.activityDate ?? r.date)}
+                {r.manualCredit && (
+                  <div className="preview">Acreditada manualmente</div>
+                )}
+                {r.dateEstimated && (
+                  <div className="preview">
+                    Fecha de incorporación: ajuste antiguo sin fecha guardada
+                  </div>
+                )}
                 <div className="preview" title={r.source ?? ""}>
                   {r.source}
                 </div>
@@ -76,6 +88,9 @@ export function MailTable({ rows }: { rows: MailRow[] }) {
                   )}
                 {r.attention === "IGNORED" && (
                   <div className="preview">{r.decision?.ignoredReason}</div>
+                )}
+                {r.decision?.manualResponseAdditional && r.firstResponseKey && (
+                  <div className="preview">Acreditación manual adicional</div>
                 )}
                 {r.kind === "RESPONSE" && !r.rootKey && (
                   <div className="preview">Sin asociación</div>

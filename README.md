@@ -155,7 +155,7 @@ Revertir elimina únicamente la procedencia de esa importación. Un correo se el
 
 Se muestran solicitudes recibidas, respondidas, no respondidas, respuestas realizadas, tasa y promedio hasta la primera respuesta. Una solicitud con dos respuestas cuenta como una solicitud atendida y dos respuestas realizadas. Se distinguen respuestas por persona y correos iniciados. El detalle de cada solicitud es una línea temporal con todo el texto, cabeceras útiles y metadata de adjuntos.
 
-Los filtros incluyen hoy, ayer, últimos siete días, mes actual, mes anterior, rango y todo el histórico. **La cohorte se define por fecha de recepción de la solicitud**: las respuestas aprobadas posteriores al período siguen contando para esa solicitud. Las respuestas por persona cuentan mensajes de respuesta válidos y también indican solicitudes distintas; nunca incluyen correos iniciados. La búsqueda incluye el cuerpo y las respuestas del hilo.
+Los filtros incluyen hoy, ayer, últimos siete días, mes actual, mes anterior, rango y todo el histórico. **Las solicitudes se filtran por recepción**: una respuesta posterior sigue actualizando su estado. **La actividad del personal se filtra por fecha de gestión**: envío del correo real o fecha en que se marcó Respondida manualmente. Respuestas por persona, Respuestas realizadas, Correos iniciados, Gestiones realizadas totales y Correos enviados comparten esta última fecha. La búsqueda incluye el cuerpo y las respuestas del hilo.
 
 ## Estado de atención y horario operativo
 
@@ -171,9 +171,21 @@ Cada tabla definitiva y conversación ofrece **Editar**. Permite cambiar clasifi
 
 **Pendiente (fuera del horario)** se aplica desde las 16:50 Caracas sin respuesta válida, permanece así hasta una respuesta aprobada o corrección manual y no aparece simultáneamente en No respondidas. La tasa usa respondidas / (respondidas + no respondidas), excluyendo pendientes fuera del horario e ignorados. Recibir una respuesta en staging no modifica todavía el histórico: cambia al aprobarla.
 
-Una solicitud puede marcarse **Respondida manualmente**, sin inventar un correo ni tiempo de respuesta. Una **Respuesta del personal sin asociación** cuenta por persona, pero no responde solicitudes ni genera tiempo; puede relacionarse más adelante con un original compatible o mediante edición. Su filtro de fecha usa la fecha de envío mientras no esté asociada.
+Una solicitud puede marcarse **Respondida manualmente**, sin inventar un correo ni tiempo de respuesta. Una **Respuesta del personal sin asociación** cuenta por persona, pero no responde solicitudes ni genera tiempo; puede relacionarse más adelante con un original compatible o mediante edición. Su filtro de actividad usa siempre la fecha de envío.
 
 No se requiere migración de esquema: ajustes y auditoría amplían el JSONB de decisiones existente; los estados de atención se derivan de fechas, respuestas válidas y ajustes. Los respaldos conservan estos campos y siguen aceptando respaldos anteriores.
+
+## Acreditaciones manuales y actividad del personal
+
+Una solicitud Respondida manualmente suma una gestión de respuesta al responsable asignado o a **Sin asignar**. No crea un email ni un tiempo ficticio. Los responsables se agrupan por ID configurado, resolviendo el remitente real por su dirección y mostrando el nombre oficial actual; nombres antiguos solo se usan como respaldo.
+
+Un email real asociado del mismo responsable sustituye la acreditación manual (cualquier responsable si la manual estaba Sin asignar). Las siguientes respuestas reales cuentan por separado. Si la atención manual fue una gestión distinta, el editor permite marcarla como **adicional a las respuestas por correo**. La deduplicación considera el histórico completo antes de aplicar filtros de fecha, evitando contar ambas evidencias en períodos separados.
+
+La fecha manual nueva es guardada por el servidor. Los registros anteriores se recuperan desde la auditoría; si no existe esa fecha, se usa la incorporación y se identifica como fecha de referencia en Dashboard y lista. Cambiar responsable o motivo no cambia la fecha de la acreditación; quitar Respondida y volver a marcarla sí registra una nueva fecha.
+
+**Gestiones realizadas totales** suma por persona respuestas (reales y manuales vigentes) más iniciados, ordena de mayor a menor e incluye TOTAL GENERAL. El KPI **Correos enviados** coincide con ese total y representa actividad, incluso manual sin email. Dashboard, lista de respuestas y reporte HTML comparten la consulta de actividad. Ignorados muestra también ignorados / solicitudes recibidas × 100, con un decimal; con denominador cero muestra 0,0 %.
+
+No se requiere migración: fecha y opción de gestión adicional son campos opcionales de decisiones JSONB, incluidos en respaldo y auditoría.
 
 ## Limpieza por fecha de importación
 

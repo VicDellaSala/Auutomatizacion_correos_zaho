@@ -219,9 +219,9 @@ try {
   ]);
   await importFile(["test-results/part-one.zip", "test-results/part-two.zip"]);
   await page.locator('a[href="?group=RESPONSE"]').click();
-  await expect(page.locator('.review-row > input[type="checkbox"]')).toHaveCount(
-    1,
-  );
+  await expect(
+    page.locator('.review-row > input[type="checkbox"]'),
+  ).toHaveCount(1);
   await page.locator(".review-row summary").first().click();
   await expect(
     page.getByText("Asociada automáticamente:", { exact: false }),
@@ -346,6 +346,50 @@ try {
     .click();
   await page.screenshot({
     path: "test-results/historical-edit.png",
+    fullPage: true,
+  });
+  await page.goto("http://127.0.0.1:3107/dashboard");
+  const totalTable = page
+    .locator("section")
+    .filter({
+      has: page.getByRole("heading", {
+        name: "Gestiones realizadas totales",
+        exact: true,
+      }),
+    })
+    .locator("table");
+  await expect(
+    totalTable.getByRole("row").filter({ hasText: "Sin asignar" }),
+  ).toContainText("1");
+  const totals = await totalTable.locator("tfoot th").allTextContents();
+  expect(Number(totals[3])).toBe(Number(totals[1]) + Number(totals[2]));
+  await expect(
+    page
+      .locator(".metric")
+      .filter({ hasText: "Correos enviados" })
+      .locator(".metric-value"),
+  ).toHaveText(totals[3]);
+  await page.getByRole("link").filter({ hasText: "Sin asignar" }).click();
+  await expect(
+    page.getByText("Acreditada manualmente", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Editar", exact: true }).click();
+  await page
+    .getByLabel("Responsable", { exact: true })
+    .selectOption({ label: "Agente" });
+  await page
+    .getByRole("button", { name: "Guardar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Cambio guardado");
+  await page.goto("http://127.0.0.1:3107/dashboard");
+  await expect(
+    totalTable.getByRole("row").filter({ hasText: "Sin asignar" }),
+  ).toHaveCount(0);
+  await expect(
+    totalTable.getByRole("row").filter({ hasText: "Agente" }).locator("td").nth(1),
+  ).toHaveText("3");
+  await page.screenshot({
+    path: "test-results/activity-dashboard.png",
     fullPage: true,
   });
   await page.goto("http://127.0.0.1:3107/answered");

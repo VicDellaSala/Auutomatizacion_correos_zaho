@@ -28,6 +28,9 @@ export function DecisionEditor({
     [ignored, setIgnored] = useState(initial.ignored ?? false),
     [reason, setReason] = useState(initial.ignoredReason ?? ""),
     [responsible, setResponsible] = useState(initial.responsibleId ?? ""),
+    [additional, setAdditional] = useState(
+      initial.manualResponseAdditional ?? false,
+    ),
     [target, setTarget] = useState(initial.targetKey ?? ""),
     [query, setQuery] = useState(""),
     [error, setError] = useState("");
@@ -92,6 +95,22 @@ export function DecisionEditor({
             ))}
           </select>
         </label>
+        {kind === "REQUEST" && status === "ANSWERED" && (
+          <label>
+            <input
+              type="checkbox"
+              checked={additional}
+              disabled={busy}
+              onChange={(e) => setAdditional(e.target.checked)}
+            />
+            La atención manual es adicional a las respuestas por correo
+            <small>
+              Por defecto, un correo del mismo responsable sustituye la
+              acreditación manual. Marca esto solo si fueron gestiones
+              distintas. Sin responsable se mostrará «Sin asignar».
+            </small>
+          </label>
+        )}
         <label>
           <input
             type="checkbox"
@@ -180,6 +199,9 @@ export function DecisionEditor({
               kind,
               ignored,
               ignoredReason: reason,
+              ...(kind === "REQUEST" && status === "ANSWERED"
+                ? { manualResponseAdditional: additional }
+                : {}),
               ...(responsible ? { responsibleId: responsible } : {}),
               ...(kind === "REQUEST" && status !== "AUTO"
                 ? { requestStatus: status }

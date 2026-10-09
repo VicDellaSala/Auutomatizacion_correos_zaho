@@ -36,6 +36,7 @@ import { sql } from "drizzle-orm";
 import { editApproved, correctionVersion } from "../src/lib/emails/service";
 import type { Decision } from "../src/types/email";
 import { attentionState } from "../src/lib/metrics/attention";
+import { ignoredPercentage } from "../src/lib/metrics/activity";
 let pg: PGlite, db: Database;
 beforeAll(async () => {
   pg = new PGlite();
@@ -326,7 +327,7 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
     expect(await metrics(db, {})).toMatchObject({
       received: 1,
       answered: 1,
-      responses: 0,
+      responses: 1,
       average: 0,
       rate: 100,
     });
@@ -337,6 +338,268 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
     ).toBe("ANSWERED");
     await edit(a.key, { kind: "REQUEST", requestStatus: "UNANSWERED" });
     expect((await metrics(db, {})).unanswered).toBe(1);
+  });
+  it.each(["Geraldine", "Victor"])(
+    "acredita respuesta manual a %s por ID y usa su nombre oficial",
+    async (name) => {
+      const [agent] = await db
+        .insert(s.agents)
+        .values({ name, email: `${name.toLowerCase()}@example.test` })
+        .returning();
+      const id = await create(),
+        a = await requestMail();
+      await stage(id, [a]);
+      await approve(db, id, "all", "reviewer");
+      await edit(a.key, {
+        kind: "REQUEST",
+        requestStatus: "ANSWERED",
+        responsibleId: agent.id,
+      });
+      expect(await metrics(db, {})).toMatchObject({
+        answered: 1,
+        responses: 1,
+        manualResponses: 1,
+        sent: 1,
+        team: [{ personId: agent.id, name, responses: 1, average: null }],
+      });
+      const list = await mailList(db, {
+        view: "responses",
+        personId: agent.id,
+      });
+      expect(list.count).toBe(1);
+      expect(list.rows[0]).toMatchObject({
+        manualCredit: true,
+        responder: name,
+        responseSeconds: null,
+      });
+      await db
+        .update(s.agents)
+        .set({ name: `${name} oficial` })
+        .where(eq(s.agents.id, agent.id));
+      expect((await metrics(db, {})).team[0].name).toBe(`${name} oficial`);
+    },
+  );
+  it("sin responsable acredita Sin asignar y conserva fecha al asignarlo después", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a]);
+    await approve(db, id, "all", "reviewer");
+    await edit(a.key, { kind: "REQUEST", requestStatus: "ANSWERED" });
+    expect(await metrics(db, {})).toMatchObject({
+      answered: 1,
+      responses: 1,
+      team: [{ personId: "unassigned", name: "Sin asignar", responses: 1 }],
+    });
+    const before = (await mailList(db, { view: "responses" })).rows[0]
+      .activityDate;
+    const [agent] = await db
+      .select()
+      .from(s.agents)
+      .where(eq(s.agents.email, staff));
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      responsibleId: agent.id,
+    });
+    expect(
+      (await mailList(db, { view: "responses" })).rows[0].activityDate,
+    ).toEqual(before);
+  });
+  it("email real sustituye manual del mismo agente y segunda respuesta sí suma", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a]);
+    await approve(db, id, "all", "reviewer");
+    const [agent] = await db
+      .select()
+      .from(s.agents)
+      .where(eq(s.agents.email, staff));
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      responsibleId: agent.id,
+    });
+    const next = await create();
+    await stage(next, [await responseMail()]);
+    await approve(db, next, "all", "reviewer");
+    expect(await metrics(db, {})).toMatchObject({
+      answered: 1,
+      responses: 1,
+      manualResponses: 0,
+    });
+    const third = await create();
+    await stage(third, [
+      await responseMail(
+        "additional@test",
+        "request@test",
+        "Sun, 04 Oct 2026 09:01:00 -0400",
+      ),
+    ]);
+    await approve(db, third, "all", "reviewer");
+    expect(await metrics(db, {})).toMatchObject({
+      answered: 1,
+      responses: 2,
+      manualResponses: 0,
+    });
+  });
+  it("atención manual distinta explícita se conserva como adicional al email real", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a, await responseMail()]);
+    await approve(db, id, "all", "reviewer");
+    const [agent] = await db
+      .select()
+      .from(s.agents)
+      .where(eq(s.agents.email, staff));
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      responsibleId: agent.id,
+      manualResponseAdditional: true,
+    });
+    expect(await metrics(db, {})).toMatchObject({
+      answered: 1,
+      responses: 2,
+      manualResponses: 1,
+    });
+    expect((await mailList(db, { view: "responses" })).count).toBe(2);
+  });
+  it("respuesta de otra persona no absorbe una gestión manual atribuida", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a, await responseMail()]);
+    await approve(db, id, "all", "reviewer");
+    const [agent] = await db
+      .insert(s.agents)
+      .values({ name: "Victor", email: "victor@example.test" })
+      .returning();
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      responsibleId: agent.id,
+    });
+    expect(await metrics(db, {})).toMatchObject({
+      responses: 2,
+      manualResponses: 1,
+    });
+  });
+  it("diez respuestas y cinco iniciados suman quince gestiones sin usar solicitudes", async () => {
+    const id = await create(),
+      mails = [];
+    for (let i = 0; i < 10; i++)
+      mails.push(await requestMail(`manual-${i}@test`));
+    for (let i = 0; i < 5; i++)
+      mails.push(
+        await parseEmail(
+          eml({ id: `sent-${i}@test`, from: staff, subject: `Reporte ${i}` }),
+        ),
+      );
+    await stage(id, mails);
+    await approve(db, id, "all", "reviewer");
+    const [agent] = await db
+      .select()
+      .from(s.agents)
+      .where(eq(s.agents.email, staff));
+    for (const a of mails.slice(0, 10))
+      await edit(a.key, {
+        kind: "REQUEST",
+        requestStatus: "ANSWERED",
+        responsibleId: agent.id,
+      });
+    const m = await metrics(db, {});
+    expect(m).toMatchObject({
+      responses: 10,
+      initiatedTotal: 5,
+      sent: 15,
+      activities: [
+        { personId: agent.id, responses: 10, initiated: 5, total: 15 },
+      ],
+    });
+    expect(m.activities.reduce((n, p) => n + p.total, 0)).toBe(
+      m.responses + m.initiatedTotal,
+    );
+  });
+  it("fecha manual existente viene de auditoría y no de recepción ni última corrección", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a]);
+    await approve(db, id, "all", "reviewer");
+    await edit(a.key, { kind: "REQUEST", requestStatus: "ANSWERED" });
+    const [row] = await db
+      .select()
+      .from(s.emails)
+      .where(eq(s.emails.key, a.key));
+    const decision = { ...row.decision! };
+    delete decision.manualAnsweredAt;
+    decision.audit![0].at = "2026-10-06T15:00:00Z";
+    await db.update(s.emails).set({ decision }).where(eq(s.emails.key, a.key));
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      ignoredReason: "Cambio de nota",
+    });
+    expect(
+      (await metrics(db, { from: "2026-10-06", to: "2026-10-06" })).responses,
+    ).toBe(1);
+    expect(
+      (await metrics(db, { from: "2026-10-03", to: "2026-10-03" })).responses,
+    ).toBe(0);
+    expect(
+      (
+        await mailList(db, {
+          view: "responses",
+          from: "2026-10-06",
+          to: "2026-10-06",
+        })
+      ).count,
+    ).toBe(1);
+  });
+  it("actividad real se filtra por envío y solicitudes por recepción", async () => {
+    const id = await create();
+    await stage(id, [await requestMail(), await responseMail()]);
+    await approve(db, id, "all", "reviewer");
+    expect(
+      await metrics(db, { from: "2026-10-03", to: "2026-10-03" }),
+    ).toMatchObject({ received: 1, answered: 1, responses: 0, sent: 0 });
+    expect(
+      await metrics(db, { from: "2026-10-04", to: "2026-10-04" }),
+    ).toMatchObject({ received: 0, responses: 1, sent: 1 });
+    expect(
+      (
+        await mailList(db, {
+          view: "responses",
+          from: "2026-10-04",
+          to: "2026-10-04",
+        })
+      ).count,
+    ).toBe(1);
+  });
+  it("ignorar crédito manual lo excluye y restaura; porcentaje informativo sin división por cero", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a]);
+    await approve(db, id, "all", "reviewer");
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      ignored: true,
+    });
+    expect(await metrics(db, {})).toMatchObject({
+      received: 0,
+      answered: 0,
+      responses: 0,
+      sent: 0,
+      ignored: 1,
+      average: 0,
+    });
+    await edit(a.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      ignored: false,
+    });
+    expect((await metrics(db, {})).responses).toBe(1);
+    expect(ignoredPercentage(51, 105).toFixed(1)).toBe("48.6");
+    expect(ignoredPercentage(51, 0)).toBe(0);
   });
   it("respuesta manual sin asociación se aprueba, cuenta por persona y encuentra original futuro", async () => {
     const id = await create(),
@@ -945,10 +1208,96 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
     expect(html).toContain("Correos no respondidos");
     expect(html).not.toMatch(/<script[^>]+src=|<link[^>]+href=/);
   });
+
+  it("nombres históricos y actuales del mismo remitente se agrupan por ID", async () => {
+    const id = await create(),
+      a = await requestMail(),
+      b = await responseMail();
+    await stage(id, [a, b]);
+    await approve(db, id, "all", "reviewer");
+    const [agent] = await db
+      .select()
+      .from(s.agents)
+      .where(eq(s.agents.email, staff));
+    await db
+      .update(s.emails)
+      .set({ staffName: "Nombre histórico distinto" })
+      .where(eq(s.emails.key, b.key));
+    await db
+      .update(s.agents)
+      .set({ name: "Nombre oficial" })
+      .where(eq(s.agents.id, agent.id));
+    const next = await create(),
+      sent = await parseEmail(
+        eml({ from: staff, id: "alias-sent@test", subject: "Informe nuevo" }),
+      );
+    await stage(next, [sent]);
+    await approve(db, next, "all", "reviewer");
+    expect((await metrics(db, {})).activities).toMatchObject([
+      {
+        personId: agent.id,
+        name: "Nombre oficial",
+        responses: 1,
+        initiated: 1,
+        total: 2,
+      },
+    ]);
+    expect(
+      (await mailList(db, { view: "staff-sent", personId: agent.id })).count,
+    ).toBe(1);
+  });
+  it("manual antiguo sin fecha usa incorporación explícitamente identificada", async () => {
+    const id = await create(),
+      a = await requestMail();
+    await stage(id, [a]);
+    await approve(db, id, "all", "reviewer");
+    await db
+      .update(s.emails)
+      .set({ decision: { kind: "REQUEST", requestStatus: "ANSWERED" } })
+      .where(eq(s.emails.key, a.key));
+    await db
+      .update(s.imports)
+      .set({ approvedAt: new Date("2026-10-06T14:00:00Z") })
+      .where(eq(s.imports.id, id));
+    expect(
+      await metrics(db, { from: "2026-10-06", to: "2026-10-06" }),
+    ).toMatchObject({ manualResponses: 1, manualDateEstimated: 1 });
+    expect((await mailList(db, { view: "responses" })).rows[0]).toMatchObject({
+      manualCredit: true,
+      dateEstimated: true,
+    });
+  });
+  it("un correo real reemplaza crédito sin asignar; ignorar ese correo recupera el crédito", async () => {
+    const id = await create(),
+      a = await requestMail(),
+      b = await responseMail();
+    await stage(id, [a]);
+    await approve(db, id, "all", "reviewer");
+    await edit(a.key, { kind: "REQUEST", requestStatus: "ANSWERED" });
+    const next = await create();
+    await stage(next, [b]);
+    await approve(db, next, "all", "reviewer");
+    expect(await metrics(db, {})).toMatchObject({
+      responses: 1,
+      manualResponses: 0,
+    });
+    await edit(b.key, { kind: "RESPONSE", targetKey: a.key, ignored: true });
+    expect(await metrics(db, {})).toMatchObject({
+      responses: 1,
+      manualResponses: 1,
+      team: [{ name: "Sin asignar" }],
+    });
+  });
   it("respaldo valida cantidades y restaura transaccionalmente sin tocar usuarios", async () => {
     const id = await create();
     await stage(id, [await requestMail(), await responseMail()]);
     await approve(db, id, "all", "reviewer");
+    const original = await requestMail();
+    await edit(original.key, {
+      kind: "REQUEST",
+      requestStatus: "ANSWERED",
+      manualResponseAdditional: true,
+    });
     const [user] = await db
       .insert(s.users)
       .values({
@@ -976,6 +1325,15 @@ describe("Transacciones reales en PostgreSQL (PGlite)", () => {
     await discard(db, id);
     await commitRestore(db, job.id, user.id);
     expect((await metrics(db, {})).answered).toBe(1);
+    expect(await metrics(db, {})).toMatchObject({
+      responses: 2,
+      manualResponses: 1,
+    });
+    expect(
+      (
+        await db.select().from(s.emails).where(eq(s.emails.key, original.key))
+      )[0].decision?.audit,
+    ).toHaveLength(1);
     expect(await db.select().from(s.users)).toHaveLength(1);
   });
 });

@@ -29,6 +29,8 @@ export type DecisionValues = {
   ignoredReason?: string;
   responsibleId?: string;
   responsibleName?: string;
+  manualAnsweredAt?: string;
+  manualResponseAdditional?: boolean;
 };
 export type CorrectionSnapshot = {
   kind: Kind;

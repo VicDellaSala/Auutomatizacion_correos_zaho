@@ -29,7 +29,11 @@ export async function ListPage({
               : "Consulta el histórico aprobado y abre cada conversación."
         }
       />
-      <Filters />
+      <Filters
+        dateLabel={
+          view === "responses" ? "Por fecha de gestión · Caracas" : undefined
+        }
+      />
       {params.q && (
         <form className="filters">
           <input name="q" defaultValue={params.q} aria-label="Búsqueda" />

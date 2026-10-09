@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { businessTimeSql } from "./business-time";
 import { activeSql, attentionSql } from "./attention";
+import { activityCte, ignoredPercentage } from "./activity";
 import type { Database } from "@/lib/db";
 import type { EmailData, Kind, Decision, AttentionState } from "@/types/email";
 export type Filters = {
@@ -8,6 +9,7 @@ export type Filters = {
   to?: string;
   q?: string;
   person?: string;
+  personId?: string;
   view?: string;
   page?: number;
 };
@@ -27,6 +29,9 @@ export type MailRow = {
   source: string | null;
   elapsedSeconds: number;
   rootKey: string | null;
+  activityDate?: Date;
+  manualCredit?: boolean;
+  dateEstimated?: boolean;
 };
 export function rangeWhere(filters: Filters, date: SQL = sql`e.date`) {
   const from =
@@ -41,32 +46,54 @@ export function rangeWhere(filters: Filters, date: SQL = sql`e.date`) {
 }
 export function searchWhere(f: Filters) {
   const term = f.q ? `%${f.q.replace(/[\\%_]/g, "\\$&")}%` : null;
-  return sql`${term ? sql`and (e."searchText" ilike ${term} or exists (select 1 from emails sr where sr."rootKey"=e.key and sr."searchText" ilike ${term}))` : sql``}
+  return sql`${f.personId ? sql`and (e.key in (select key from identities where "personId"=${f.personId}) or exists(select 1 from real_responses pr where pr."rootKey"=e.key and pr."personId"=${f.personId}))` : sql``} ${term ? sql`and (e."searchText" ilike ${term} or exists (select 1 from emails sr where sr."rootKey"=e.key and sr."searchText" ilike ${term}))` : sql``}
     ${f.person ? sql`and (coalesce(e.decision->>'responsibleName',e."staffName")=${f.person} or exists(select 1 from emails pr where pr."rootKey"=e.key and pr.kind='RESPONSE' and not coalesce((pr.decision->>'ignored')::boolean,false) and coalesce(pr.decision->>'responsibleName',pr."staffName")=${f.person}))` : sql``}`;
 }
 export async function metrics(db: Database, f: Filters) {
-  const result = await db.execute(sql`select count(*)::int as received,
+  const result =
+    await db.execute(sql`${activityCte} select count(*)::int as received,
     count(*) filter(where ${attentionSql}='ANSWERED')::int as answered,
     count(*) filter(where ${attentionSql}='UNANSWERED')::int as unanswered,
     count(*) filter(where ${attentionSql}='AFTER_HOURS')::int as "afterHours",
+    count(*) filter(where c."firstResponseAt" is not null)::int as "timedRequests",
     coalesce(avg(case when c."firstResponseAt" is not null then ${businessTimeSql(sql`e.date`, sql`c."firstResponseAt"`)} end),0)::float as average
     from emails e left join conversations c on c."rootKey"=e.key where e.kind='REQUEST' and ${activeSql} ${rangeWhere(f)} ${searchWhere(f)}`);
-  const team =
-    await db.execute(sql`select coalesce(r.decision->>'responsibleName',r."staffName") as name, count(*)::int as responses,
-    count(distinct root.key)::int as requests, count(*) filter(where root.key is null)::int as unassociated,
-    avg(case when root.key is not null then ${businessTimeSql(sql`root.date`, sql`r.date`)} end)::float as average
-    from emails r left join emails root on root.key=r."rootKey" join emails e on e.key=coalesce(root.key,r.key)
-    where r.kind='RESPONSE' and not coalesce((r.decision->>'ignored')::boolean,false) and ${activeSql} and (root.key is null or root.kind='REQUEST')
-    ${rangeWhere(f)} ${searchWhere({ ...f, person: undefined })} ${f.person ? sql`and coalesce(r.decision->>'responsibleName',r."staffName")=${f.person}` : sql``}
-    group by coalesce(r.decision->>'responsibleName',r."staffName") order by responses desc`);
-  const initiated = await db.execute(
-    sql`select coalesce(e.decision->>'responsibleName',e."staffName") as name,count(*)::int as count from emails e where e.kind='STAFF_SENT' and ${activeSql} ${rangeWhere(f)} ${searchWhere(f)} group by coalesce(e.decision->>'responsibleName',e."staffName")`,
-  );
+  const activity = await db.execute(sql`${activityCte}
+    select a."personId",a.name,
+      count(*) filter(where a.type='RESPONSE')::int as responses,
+      count(*) filter(where a.type='RESPONSE' and a.manual)::int as manual,
+      count(*) filter(where a.type='RESPONSE' and a.estimated)::int as estimated,
+      count(distinct a."rootKey") filter(where a.type='RESPONSE')::int as requests,
+      count(*) filter(where a.type='RESPONSE' and a."rootKey" is null)::int as unassociated,
+      avg(case when a.type='RESPONSE' and a."requestDate" is not null then ${businessTimeSql(sql`a."requestDate"`, sql`a.date`)} end)::float as average,
+      count(*) filter(where a.type='STAFF_SENT')::int as initiated,count(*)::int as total
+    from activity a join emails e on e.key=a.key where true
+      ${rangeWhere(f, sql`a.date`)} ${searchWhere({ ...f, person: undefined, personId: undefined })}
+      ${f.personId ? sql`and a."personId"=${f.personId}` : f.person ? sql`and a.name=${f.person}` : sql``}
+    group by a."personId",a.name order by total desc,a.name,a."personId"`);
+  const activities = activity.rows as unknown as {
+    personId: string;
+    name: string;
+    responses: number;
+    manual: number;
+    estimated: number;
+    requests: number;
+    unassociated: number;
+    average: number | null;
+    initiated: number;
+    total: number;
+  }[];
+  const team = activities
+    .filter((p) => p.responses > 0)
+    .sort((a, b) => b.responses - a.responses || a.name.localeCompare(b.name));
+  const initiated = activities
+    .filter((p) => p.initiated > 0)
+    .map((p) => ({ personId: p.personId, name: p.name, count: p.initiated }));
   const pending = await db.execute(
     sql`select count(*)::int as count from staged_emails where state='PENDING'`,
   );
   const ignored = await db.execute(
-    sql`select count(*)::int as count from emails e where not (${activeSql}) ${rangeWhere(f)} ${searchWhere(f)}`,
+    sql`${activityCte} select count(*)::int as count from emails e where not (${activeSql}) ${rangeWhere(f)} ${searchWhere(f)}`,
   );
   const row = result.rows[0] as {
     received: number;
@@ -74,6 +101,7 @@ export async function metrics(db: Database, f: Filters) {
     unanswered: number;
     afterHours: number;
     average: number;
+    timedRequests: number;
   };
   const evaluated = row.answered + row.unanswered;
   return {
@@ -81,29 +109,31 @@ export async function metrics(db: Database, f: Filters) {
     evaluated,
     ignored: Number(ignored.rows[0].count),
     rate: evaluated ? (100 * row.answered) / evaluated : 0,
-    responses: team.rows.reduce((n, r) => n + Number(r.responses), 0),
-    team: team.rows as {
-      name: string;
-      responses: number;
-      requests: number;
-      unassociated: number;
-      average: number | null;
-    }[],
-    initiated: initiated.rows as { name: string; count: number }[],
+    responses: team.reduce((n, r) => n + r.responses, 0),
+    manualResponses: team.reduce((n, r) => n + r.manual, 0),
+    manualDateEstimated: team.reduce((n, r) => n + r.estimated, 0),
+    initiatedTotal: initiated.reduce((n, r) => n + r.count, 0),
+    sent: activities.reduce((n, r) => n + r.total, 0),
+    ignoredPercent: ignoredPercentage(
+      Number(ignored.rows[0].count),
+      row.received,
+    ),
+    activities,
+    team,
+    initiated,
     pending: Number(pending.rows[0].count),
   };
 }
 export async function mailList(db: Database, f: Filters, pageSize = 40) {
+  if (f.view === "responses") return responseList(db, f, pageSize);
   const kind =
     f.view === "ignored"
       ? sql`not (${activeSql})`
       : f.view === "staff-sent"
         ? sql`e.kind='STAFF_SENT' and ${activeSql}`
-        : f.view === "responses"
-          ? sql`e.kind='RESPONSE' and ${activeSql} and not exists(select 1 from emails ir where ir.key=e."rootKey" and coalesce((ir.decision->>'ignored')::boolean,false))`
-          : f.view === "review"
-            ? sql`e.kind='REVIEW' and ${activeSql}`
-            : sql`e.kind='REQUEST' and ${activeSql}`;
+        : f.view === "review"
+          ? sql`e.kind='REVIEW' and ${activeSql}`
+          : sql`e.kind='REQUEST' and ${activeSql}`;
   const filterState = (
     {
       answered: "ANSWERED",
@@ -112,20 +142,41 @@ export async function mailList(db: Database, f: Filters, pageSize = 40) {
     } as Record<string, string>
   )[f.view ?? ""];
   const state = filterState ? sql`and ${attentionSql}=${filterState}` : sql``;
-  const where = sql`${kind} ${state} ${rangeWhere(f, f.view === "responses" ? sql`coalesce((select root.date from emails root where root.key=e."rootKey"),e.date)` : sql`e.date`)} ${searchWhere(f)}`;
+  const where = sql`${kind} ${state} ${rangeWhere(f)} ${searchWhere(f)}`;
   const result =
-    await db.execute(sql`select e.key,e.data,e.date,e.kind,e.decision,e."rootKey",e."staffName",${attentionSql} as attention,c."firstResponseAt",c."firstResponseKey",
+    await db.execute(sql`${activityCte} select e.key,e.data,e.date,e.kind,e.decision,e."rootKey",e."staffName",${attentionSql} as attention,c."firstResponseAt",c."firstResponseKey",
     case when c."firstResponseAt" is not null then ${businessTimeSql(sql`e.date`, sql`c."firstResponseAt"`)} end as "responseSeconds",
-    coalesce(c."responseCount",0) as "responseCount",coalesce(e.decision->>'responsibleName',r.decision->>'responsibleName',r."staffName") as responder,
+    coalesce(c."responseCount",0) as "responseCount",coalesce((select name from identities where key=case when e.decision->>'responsibleId' is not null or (e.kind='REQUEST' and e.decision->>'requestStatus'='ANSWERED' and c."firstResponseKey" is null) then e.key else coalesce(r.key,e.key) end),'Sin asignar') as responder,
     ${businessTimeSql(sql`e.date`, sql`now()`)} as "elapsedSeconds",
     (select string_agg(i.filename,', ') from email_imports p join imports i on i.id=p."importId" where p."emailKey"=e.key) as source
     from emails e left join conversations c on c."rootKey"=e.key left join emails r on r.key=c."firstResponseKey" where ${where}
     order by e.date desc,e.key limit ${pageSize} offset ${(Math.max(1, f.page ?? 1) - 1) * pageSize}`);
   const count = await db.execute(
-    sql`select count(*)::int as count from emails e left join conversations c on c."rootKey"=e.key where ${where}`,
+    sql`${activityCte} select count(*)::int as count from emails e left join conversations c on c."rootKey"=e.key where ${where}`,
   );
   return {
     rows: result.rows as unknown as MailRow[],
+    count: Number(count.rows[0].count),
+  };
+}
+
+async function responseList(db: Database, f: Filters, pageSize: number) {
+  const where = sql`a.type='RESPONSE' ${rangeWhere(f, sql`a.date`)} ${searchWhere({ ...f, person: undefined, personId: undefined })}
+    ${f.personId ? sql`and a."personId"=${f.personId}` : f.person ? sql`and a.name=${f.person}` : sql``}`;
+  const rows =
+    await db.execute(sql`${activityCte} select e.key,e.data,e.date,e.kind,e.decision,e."rootKey",e."staffName",
+    case when a.manual then 'ANSWERED' else 'RESPONSE' end as attention,
+    a.date as "activityDate",a.manual as "manualCredit",a.estimated as "dateEstimated",null::timestamptz as "firstResponseAt",null::text as "firstResponseKey",
+    case when a."requestDate" is not null then ${businessTimeSql(sql`a."requestDate"`, sql`a.date`)} end as "responseSeconds",
+    1 as "responseCount",a.name as responder,0 as "elapsedSeconds",
+    (select string_agg(i.filename,', ') from email_imports p join imports i on i.id=p."importId" where p."emailKey"=e.key) as source
+    from activity a join emails e on e.key=a.key where ${where} order by a.date desc,e.key
+    limit ${pageSize} offset ${(Math.max(1, f.page ?? 1) - 1) * pageSize}`);
+  const count = await db.execute(
+    sql`${activityCte} select count(*)::int as count from activity a join emails e on e.key=a.key where ${where}`,
+  );
+  return {
+    rows: rows.rows as unknown as MailRow[],
     count: Number(count.rows[0].count),
   };
 }

@@ -1,6 +1,6 @@
 # Verificación y decisiones
 
-Fecha de actualización: 07/10/2026, America/Caracas.
+Fecha de actualización: 08/10/2026, America/Caracas.
 
 ## Ejemplo real suministrado
 
@@ -32,7 +32,7 @@ No se adjuntó un HTML de referencia; el reporte se implementó siguiendo las se
 
 | Verificación | Resultado |
 |---|---|
-| `npm test` | 75 pruebas aprobadas, 4 archivos |
+| `npm test` | 88 pruebas aprobadas, 4 archivos |
 | `npm run lint` | Sin errores ni advertencias |
 | `npm run typecheck` | Correcto |
 | `npm run build` | Build de producción correcto |
@@ -72,3 +72,9 @@ Se conservaron los cambios locales pendientes. Pasaron 75 pruebas unitarias e in
 Se verifican el umbral exacto 16:50, permanencia indefinida del pendiente hasta respuesta o corrección, respuesta de otro día solo al aprobar, búsqueda sin límite de siete días para asuntos específicos compatibles, exclusión de ignorados de tasa/tiempo, restauración, respuesta manual sin correo ficticio, respuesta sin asociación y recuperación posterior del original, edición concurrente rechazada y auditoría protegida contra inyección. La reasociación manual elimina una exclusión anterior y audita ambos registros.
 
 No hubo migración de esquema, reset ni eliminación de datos de producción. Los nuevos campos viven en el JSONB de decisiones existente. El acceso compartido conserva su autenticación; su auditoría identifica la cuenta compartida.
+
+## Acreditación manual y gestiones del 08/10/2026
+
+Se verifica la gestión manual con responsable y Sin asignar, unificación por ID y nombre oficial, sustitución por correo real del mismo responsable, respuestas adicionales y crédito manual explícitamente adicional, fechas de envío/acreditación separadas de recepción, fecha recuperada desde auditoría y referencia de incorporación para registros antiguos sin fecha. La suite cubre exclusión/restauración de ignorados, coherencia de totales y porcentaje 51/105 = 48,6 %, así como respaldo de fecha y auditoría. No se crean mensajes de respuesta ficticios ni se migran o borran datos de producción.
+
+Se repitieron las 88 pruebas, lint, typecheck y build satisfactoriamente. El E2E de Chrome pasó sobre ese build y una base temporal: acredita una gestión sin responsable, la asigna al agente y comprueba la tabla de gestiones y su igualdad con el KPI de enviados. También mantiene las verificaciones del flujo completo y móvil. La prueba grande de 500 MB no se repitió en esta ronda.

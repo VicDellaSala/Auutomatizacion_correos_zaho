@@ -35,6 +35,8 @@ const decisionValuesSchema = z.object({
   ignoredReason: z.string().trim().max(2000).optional(),
   responsibleId: z.uuid().optional(),
   responsibleName: z.string().max(200).optional(),
+  manualAnsweredAt: z.iso.datetime({ offset: true }).optional(),
+  manualResponseAdditional: z.boolean().optional(),
   excludedResponseKeys: z
     .array(z.string().regex(/^[a-f0-9]{64}$/))
     .max(100000)
@@ -68,4 +70,5 @@ export const decisionSchema = decisionValuesSchema.extend({
 export const correctionSchema = decisionValuesSchema.omit({
   excludedResponseKeys: true,
   responsibleName: true,
+  manualAnsweredAt: true,
 });

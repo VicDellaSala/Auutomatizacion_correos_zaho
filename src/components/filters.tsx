@@ -4,7 +4,11 @@ import { useState } from "react";
 function day(d: Date) {
   return d.toISOString().slice(0, 10);
 }
-export function Filters() {
+export function Filters({
+  dateLabel = "Por fecha de recepción · Caracas",
+}: {
+  dateLabel?: string;
+}) {
   const params = useSearchParams(),
     router = useRouter();
   const [from, setFrom] = useState(params.get("from") ?? ""),
@@ -86,7 +90,7 @@ export function Filters() {
         className="muted"
         style={{ fontSize: 11, marginLeft: "auto", paddingBottom: 6 }}
       >
-        Por fecha de recepción · Caracas
+        {dateLabel}
       </span>
     </form>
   );
